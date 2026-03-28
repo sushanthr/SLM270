@@ -4,7 +4,7 @@ SLM270 training script.
   - Gradient accumulation (effective batch = BATCH_SIZE × GRAD_ACCUM)
   - Cosine LR schedule with linear warmup
   - WandB metrics + token-throughput tracking
-  - 4 evenly-spaced checkpoints over 200B token budget
+  - Validation and checkpointing every 1B tokens (retain last 2 checkpoints)
 """
 
 import os
@@ -48,12 +48,13 @@ class TrainConfig:
     betas: tuple        = (0.9, 0.95)
 
     # Checkpointing
-    n_checkpoints: int  = 4
-    checkpoint_dir: str = "checkpoints"
+    checkpoint_dir: str  = "checkpoints"
+    ckpt_interval_tokens: int = 1_000_000_000   # checkpoint every 1B tokens
+    ckpt_keep: int           = 2                # number of recent checkpoints to retain
 
     # Validation
-    val_every: int      = 100_000           # run validation every N optimiser steps
-    val_samples: int    = 1_000             # Wikipedia documents to validate on
+    val_interval_tokens: int = 1_000_000_000    # run validation every 1B tokens
+    val_samples: int         = 1_000            # Wikipedia documents to validate on
 
     # Quartet-II
     fp4_bwd_warmup: int = 100               # use BF16 backward for first N opt-steps
@@ -69,12 +70,6 @@ CFG = TrainConfig()
 # Derived constants
 TOKENS_PER_OPT_STEP = CFG.batch_size * CFG.seq_len * CFG.grad_accum   # 65 536
 TOTAL_OPT_STEPS     = CFG.total_tokens // TOKENS_PER_OPT_STEP         # ≈ 3 051 757
-
-# Checkpoint at evenly-spaced milestones (25 / 50 / 75 / 100 %)
-CHECKPOINT_AT = {
-    round(TOTAL_OPT_STEPS * (i + 1) / CFG.n_checkpoints)
-    for i in range(CFG.n_checkpoints)
-}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -121,6 +116,21 @@ def save_checkpoint(model, optimizer, opt_step: int, tokens_seen: int) -> str:
         path,
     )
     return path
+
+
+def rotate_checkpoints() -> None:
+    """Delete old checkpoints, keeping only the CFG.ckpt_keep most recent ones."""
+    ckpts = sorted(
+        [
+            os.path.join(CFG.checkpoint_dir, f)
+            for f in os.listdir(CFG.checkpoint_dir)
+            if f.startswith("ckpt_") and f.endswith(".pt")
+        ],
+        key=os.path.getmtime,
+    )
+    for old in ckpts[: -CFG.ckpt_keep]:
+        os.remove(old)
+        print(f"  ✗ Removed old checkpoint {old}")
 
 
 def enable_fp4_backward(model: torch.nn.Module) -> int:
@@ -230,7 +240,7 @@ def train() -> None:
     print(f"Seq len     : {CFG.seq_len}")
     print(f"Batch (eff) : {CFG.batch_size} × {CFG.grad_accum} × {CFG.seq_len} = {TOKENS_PER_OPT_STEP:,} tok/step")
     print(f"Target      : {format_tokens(CFG.total_tokens)}  |  {TOTAL_OPT_STEPS:,} opt-steps")
-    print(f"Checkpoints : {sorted(CHECKPOINT_AT)}")
+    print(f"Checkpoints : every {format_tokens(CFG.ckpt_interval_tokens)}, keep last {CFG.ckpt_keep}")
 
     # Fused linear + cross-entropy: never materialises the (B×T × 262 144) logit
     # tensor — saves ~4.3 GB of VRAM per micro-batch.
@@ -287,7 +297,7 @@ def train() -> None:
             "weight_decay":     CFG.weight_decay,
             "params_total":     total_params,
             "params_unique":    unique_params,
-            "val_every_steps":  CFG.val_every,
+            "val_interval_tokens_B": CFG.val_interval_tokens / 1e9,
             "val_samples":      CFG.val_samples,
             "linear_backend":   "quartet2_nvfp4",
         },
@@ -302,6 +312,9 @@ def train() -> None:
     opt_step        = 0
     micro_step      = 0
     loss_accum      = 0.0
+
+    next_val_tokens  = CFG.val_interval_tokens
+    next_ckpt_tokens = CFG.ckpt_interval_tokens
 
     # Throughput window
     tput_t0         = time.perf_counter()
@@ -406,8 +419,8 @@ def train() -> None:
                     step=opt_step,
                 )
 
-            # ── Validation ───────────────────────────────────────────────────
-            if opt_step % CFG.val_every == 0:
+            # ── Validation (every 1B tokens) ──────────────────────────────
+            if tokens_seen >= next_val_tokens:
                 val_metrics = run_validation(model, val_batches, device)
                 print(
                     f"\n  [val @ {opt_step:,} steps / {format_tokens(tokens_seen)}]"
@@ -421,11 +434,13 @@ def train() -> None:
                     },
                     step=opt_step,
                 )
+                next_val_tokens += CFG.val_interval_tokens
 
-            # ── Checkpoint ───────────────────────────────────────────────────
-            if opt_step in CHECKPOINT_AT:
+            # ── Checkpoint (every 1B tokens, keep last 2) ─────────────────
+            if tokens_seen >= next_ckpt_tokens:
                 path = save_checkpoint(model, optimizer, opt_step, tokens_seen)
                 print(f"\n  ✓ Checkpoint {path}  ({format_tokens(tokens_seen)})\n")
+                rotate_checkpoints()
                 wandb.log(
                     {
                         "checkpoint/step":         opt_step,
@@ -433,6 +448,7 @@ def train() -> None:
                     },
                     step=opt_step,
                 )
+                next_ckpt_tokens += CFG.ckpt_interval_tokens
 
         # ── Budget check ──────────────────────────────────────────────────────
         if tokens_seen >= CFG.total_tokens:
