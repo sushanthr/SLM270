@@ -98,9 +98,6 @@ tokenizers==0.22.2
 torch==2.11.0
 torchao==0.16.0
 tqdm==4.67.3
-transformer_engine==2.11.0
-transformer_engine_cu13==2.11.0
-transformer_engine_torch==2.11.0
 transformers==5.4.0
 triton==3.6.0
 typer==0.24.1

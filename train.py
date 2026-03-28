@@ -18,9 +18,6 @@ import wandb
 from tqdm import tqdm
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 
-# Transformer Engine — BF16 training via torch.autocast
-import transformer_engine.pytorch as te
-
 from quartet2.linear import Quartet_II_linear
 
 from SLM270 import Gemma3Model, GEMMA3_CONFIG_270M, SLM270Tokenizer
