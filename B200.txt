@@ -1,0 +1,55 @@
+Baseline:
+        3B   :    5.24 ms forward,  16.64 ms forward+backward, 22.27 TFLOP | 1337.7 TFLOp/s
+        7B   :    9.09 ms forward,  29.45 ms forward+backward, 39.79 TFLOP | 1351.0 TFLOp/s
+        22B  :   20.78 ms forward,  65.12 ms forward+backward, 89.06 TFLOP | 1367.7 TFLOp/s
+        52B  :   37.46 ms forward, 115.31 ms forward+backward, 159.15 TFLOP | 1380.3 TFLOp/s
+
+3B:
+        nvfp4:   2.16 ms forward,   7.63 ms forward+backward <=> 2917.4 TFLOp/s
+         gemm:   1.49 ms forward,   4.50 ms forward+backward <=> 4946.6 TFLOp/s
+        nvfp4: 242.81%   forward, 218.09%   forward+backward
+7B:
+        nvfp4:   3.56 ms forward,  12.06 ms forward+backward <=> 3299.9 TFLOp/s
+         gemm:   2.57 ms forward,   7.68 ms forward+backward <=> 5182.2 TFLOp/s
+        nvfp4: 255.02%   forward, 244.26%   forward+backward
+22B:
+        nvfp4:   7.25 ms forward,  23.45 ms forward+backward <=> 3798.1 TFLOp/s
+         gemm:   5.38 ms forward,  16.19 ms forward+backward <=> 5502.5 TFLOp/s
+        nvfp4: 286.69%   forward, 277.70%   forward+backward
+52B:
+        nvfp4:  12.42 ms forward,  39.51 ms forward+backward <=> 4028.3 TFLOp/s
+         gemm:   9.78 ms forward,  29.66 ms forward+backward <=> 5366.3 TFLOp/s
+        nvfp4: 301.63%   forward, 291.84%   forward+backward
+
+
+---- even with CUDA 13 ---
+Baseline:
+        3B   :    4.90 ms forward,  16.60 ms forward+backward, 22.27 TFLOP | 1341.0 TFLOp/s
+        7B   :    9.16 ms forward,  29.05 ms forward+backward, 39.79 TFLOP | 1369.7 TFLOp/s
+        22B  :   20.42 ms forward,  63.82 ms forward+backward, 89.06 TFLOP | 1395.6 TFLOp/s
+        52B  :   38.19 ms forward, 116.47 ms forward+backward, 159.15 TFLOP | 1366.5 TFLOp/s
+
+3B:
+        nvfp4:   2.10 ms forward,   7.84 ms forward+backward <=> 2839.0 TFLOp/s
+         gemm:   1.54 ms forward,   4.45 ms forward+backward <=> 5007.3 TFLOp/s
+        nvfp4: 233.31%   forward, 211.71%   forward+backward
+7B:
+        nvfp4:   3.55 ms forward,  11.83 ms forward+backward <=> 3364.0 TFLOp/s
+         gemm:   2.59 ms forward,   7.62 ms forward+backward <=> 5219.0 TFLOp/s
+        nvfp4: 258.15%   forward, 245.61%   forward+backward
+22B:
+        nvfp4:   6.94 ms forward,  23.25 ms forward+backward <=> 3830.2 TFLOp/s
+         gemm:   5.47 ms forward,  16.50 ms forward+backward <=> 5396.7 TFLOp/s
+        nvfp4: 294.26%   forward, 274.45%   forward+backward
+52B:
+        nvfp4:  12.04 ms forward,  39.29 ms forward+backward <=> 4050.6 TFLOp/s
+         gemm:   9.73 ms forward,  29.54 ms forward+backward <=> 5388.0 TFLOp/s
+        nvfp4: 317.32%   forward, 296.43%   forward+backward
+
+-- with batch size 256
+
+
+[25.95M / 50.000B M]  loss=11.7545   178,043 tok/s:  |                                                                                                                                                                                                                 |  0.05%  03:39<77:59:58
+  FP4 backward enabled at step 100 (127 layers)
+
+[26.21M / 50.000B M]  loss=11.7552   178,030 tok/s:  |                                                                                                                                                                                                                 |  0.05%  03:55<77:59:29
