@@ -1,0 +1,9 @@
+bin/
+lib/
+include/
+wandb/
+share/
+lib64/
+__pycache__/
+pyvenv.cfg
+lib64
