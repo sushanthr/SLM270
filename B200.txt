@@ -53,3 +53,54 @@ Baseline:
   FP4 backward enabled at step 100 (127 layers)
 
 [26.21M / 50.000B M]  loss=11.7552   178,030 tok/s:  |                                                                                                                                                                                                                 |  0.05%  03:55<77:59:29
+----------
+
+
+(.venv) root@b396189b0c1a:/workspace/SLM270# vi train.py
+(.venv) root@b396189b0c1a:/workspace/SLM270# python train.py
+Total number of parameters: 435,870,336
+Total number of unique parameters: 268,098,176
+Quartet-II  : 127 linear layers swapped to NVFP4
+Parameters  : 435,870,336  (unique: 268,098,176)
+Seq len     : 1024
+Batch (eff) : 320 × 1 × 1024 = 327,680 tok/step
+Target      : 50.000B  |  152,587 opt-steps
+Checkpoints : every 1.000B, keep last 2
+Building validation set (1000 Wikipedia samples)…
+`trust_remote_code` is not supported anymore.
+Please check that the Hugging Face dataset 'wikimedia/wikipedia' isn't based on a loading script and remove `trust_remote_code`.
+If the dataset is based on a loading script, please ask the dataset author to remove it and convert it to a standard format like Parquet.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Resolving data files: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 41/41 [00:00<00:00, 65761.55it/s]
+  → 2 validation batches  (559,104 tokens)
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /root/.netrc.
+wandb: Currently logged in as: me-sushanth to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.25.1
+wandb: Run data is saved locally in /workspace/SLM270/wandb/run-20260328_200756-bqd5o3fs
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run solar-cloud-19
+wandb: ⭐️ View project at https://wandb.ai/me-sushanth/SLM270
+wandb: 🚀 View run at https://wandb.ai/me-sushanth/SLM270/runs/bqd5o3fs
+ |                                                                                                                                                                                                                                                                            |  0.00%  00:00<?`trust_remote_code` is not supported anymore.
+Please check that the Hugging Face dataset 'HuggingFaceTB/smollm-corpus' isn't based on a loading script and remove `trust_remote_code`.
+If the dataset is based on a loading script, please ask the dataset author to remove it and convert it to a standard format like Parquet.
+Resolving data files: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 104/104 [00:00<00:00, 73361.52it/s]
+Resolving data files: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 104/104 [00:00<00:00, 77769.23it/s]
+`trust_remote_code` is not supported anymore.                                                                                                                                                                                                                          | 0/104 [00:00<?, ?it/s]
+Please check that the Hugging Face dataset 'HuggingFaceTB/smollm-corpus' isn't based on a loading script and remove `trust_remote_code`.
+If the dataset is based on a loading script, please ask the dataset author to remove it and convert it to a standard format like Parquet.
+Resolving data files: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 104/104 [00:00<00:00, 63494.56it/s]
+Resolving data files: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 234/234 [00:00<00:00, 74921.16it/s]
+cudnn_handle created for device_id = 0                                                                                                                                                                                                                                 | 0/234 [00:00<?, ?it/s]
+
+[32.44M / 50.000B M]  loss=11.7530   177,675 tok/s:  |▏                                                                                                                                                                                                                |  0.06%  04:14<78:09:58
+  FP4 backward enabled at step 100 (127 layers)
+
+[37.36M / 50.000B M]  loss=11.5253   182,694 tok/s:  |▏                                                                                                                                                                                                                |  0.07%  06:07<86:31:56
+
+
+
+
+
+
+

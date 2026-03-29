@@ -33,8 +33,8 @@ class TrainConfig:
     seq_len: int        = 1024
 
     # Batch
-    batch_size: int     = 384
-    grad_accum: int     = 1                 # effective batch = 320 × 1 × 1024 = 327 680 tok
+    batch_size: int     = 32
+    grad_accum: int     = 2                 # effective batch = 32 × 2 × 1024 = 65 536 tok
 
     # Optimiser
     max_lr: float       = 3e-4
