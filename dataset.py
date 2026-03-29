@@ -20,19 +20,12 @@ from typing import Iterator, Dict, List
 # Weights are proportional to row counts so sampling reflects corpus size.
 DATASET_CONFIGS = [
     {
-        "path": "HuggingFaceTB/smollm-corpus",
-        "name": "cosmopedia-v2",
+        "path": "OptimalScale/ClimbMix",
+        "name": "Nvidia-ClimbMix",
         "split": "train",
         "text_field": "text",
-        "weight": 39.1,
-    },
-    {
-        "path": "HuggingFaceTB/smollm-corpus",
-        "name": "fineweb-edu-dedup",
-        "split": "train",
-        "text_field": "text",
-        "weight": 190.0,
-    },
+        "weight": 1.0,
+    }
 ]
 
 

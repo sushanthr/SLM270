@@ -246,7 +246,7 @@ def train() -> None:
             "val_samples":      CFG.val_samples,
         },
     )
-    wandb.watch(model, log="gradients", log_freq=500)
+    # wandb.watch(model, log="gradients", log_freq=500)
 
     # ── State ──────────────────────────────────────────────────────────────────
     model.train()
