@@ -1,8 +1,9 @@
 """
 SLM270 training script.
-  - Transformer Engine BF16
+  - BF16 autocast
   - Gradient accumulation (effective batch = BATCH_SIZE × GRAD_ACCUM)
   - Cosine LR schedule with linear warmup
+  - Liger kernels: fused linear cross-entropy (lm_head)
   - WandB metrics + token-throughput tracking
   - Validation and checkpointing every 1B tokens (retain last 2 checkpoints)
 """
@@ -18,8 +19,6 @@ import wandb
 from tqdm import tqdm
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 
-from quartet2.linear import Quartet_II_linear
-
 from SLM270 import Gemma3Model, GEMMA3_CONFIG_270M, SLM270Tokenizer
 from dataset import build_dataloader, build_validation_batches, PrefetchLoader
 
@@ -33,7 +32,7 @@ class TrainConfig:
     seq_len: int        = 1024
 
     # Batch
-    batch_size: int     = 64
+    batch_size: int     = 224
     grad_accum: int     = 1                 # effective batch = 64 × 1 × 1024 = 65 536 tok
 
     # Optimiser
@@ -53,9 +52,6 @@ class TrainConfig:
     val_interval_tokens: int = 1_000_000_000    # run validation every 1B tokens
     val_samples: int         = 1_000            # Wikipedia documents to validate on
 
-    # Quartet-II
-    fp4_bwd_warmup: int = 100               # use BF16 backward for first N opt-steps
-
     # Misc
     seed: int           = 42
     wandb_project: str  = "SLM270"
@@ -65,8 +61,8 @@ class TrainConfig:
 CFG = TrainConfig()
 
 # Derived constants
-TOKENS_PER_OPT_STEP = CFG.batch_size * CFG.seq_len * CFG.grad_accum   # 65 536
-TOTAL_OPT_STEPS     = CFG.total_tokens // TOKENS_PER_OPT_STEP         # ≈ 3 051 757
+TOKENS_PER_OPT_STEP = CFG.batch_size * CFG.seq_len * CFG.grad_accum   # 262 144
+TOTAL_OPT_STEPS     = CFG.total_tokens // TOKENS_PER_OPT_STEP         # ≈ 190 735
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -130,44 +126,6 @@ def rotate_checkpoints() -> None:
         print(f"  ✗ Removed old checkpoint {old}")
 
 
-def enable_fp4_backward(model: torch.nn.Module) -> int:
-    """Flips disable_backward_quant=False on every Quartet_II_linear in the model."""
-    n = 0
-    for m in model.modules():
-        if isinstance(m, Quartet_II_linear):
-            m.disable_backward_quant = False
-            n += 1
-    return n
-
-
-# ── Quartet-II linear swap ───────────────────────────────────────────────────
-
-def replace_linear_with_quartet(model: torch.nn.Module) -> None:
-    """
-    Recursively replaces every nn.Linear with Quartet_II_linear in-place.
-    Copies weights so training continues from the same initialisation.
-    Must be called before torch.compile so the custom autograd ops are visible
-    to the tracer.
-    """
-    for name, child in list(model.named_children()):
-        if type(child) is torch.nn.Linear:
-            q = Quartet_II_linear(
-                child.in_features,
-                child.out_features,
-                bias=child.bias is not None,
-                four_over_six=True,
-                disable_backward_quant=True,   # starts BF16; flipped to FP4 after warmup
-                device=child.weight.device,
-                dtype=child.weight.dtype,
-            )
-            q.weight.data.copy_(child.weight.data)
-            if child.bias is not None:
-                q.bias.data.copy_(child.bias.data)
-            setattr(model, name, q)
-        else:
-            replace_linear_with_quartet(child)
-
-
 # ── Validation ────────────────────────────────────────────────────────────────
 
 @torch.no_grad()
@@ -209,28 +167,19 @@ def run_validation(model, val_batches, device, fused_ce, out_head_weight) -> dic
 def train() -> None:
     torch.manual_seed(CFG.seed)
     torch.backends.cuda.matmul.allow_tf32 = True
-    torch._dynamo.config.cache_size_limit = 256          # Quartet creates many guarded frames
     device = torch.device("cuda")
 
     # ── Model ──────────────────────────────────────────────────────────────────
     model_cfg = {**GEMMA3_CONFIG_270M, "context_length": CFG.seq_len}
     model = Gemma3Model(model_cfg).to(device)
 
-    # Count params before the Quartet swap (tok_emb still accessible as plain attr)
     total_params  = sum(p.numel() for p in model.parameters())
     unique_params = total_params - model.tok_emb.weight.numel()   # weight-tied head
 
-    # Swap all nn.Linear → Quartet_II_linear (NVFP4 fwd + FP4 bwd).
-    # Must happen before torch.compile so the custom_op is visible to the tracer.
-    replace_linear_with_quartet(model)
-    n_quartet = sum(1 for m in model.modules() if isinstance(m, Quartet_II_linear))
-    print(f"Quartet-II  : {n_quartet} linear layers swapped to NVFP4")
-
     model.gradient_checkpointing = True
 
-    # torch.compile fuses RMSNorm, SwiGLU, RoPE and attention kernels.
-    # fullgraph=False allows graph breaks at Quartet's custom autograd boundaries.
-    model = torch.compile(model, mode="default", fullgraph=False)
+    # torch.compile fuses RMSNorm, GeGLU, RoPE and attention kernels.
+    model = torch.compile(model, mode="default", fullgraph=True)
 
     print(f"Parameters  : {total_params:,}  (unique: {unique_params:,})")
     print(f"Seq len     : {CFG.seq_len}")
@@ -295,7 +244,6 @@ def train() -> None:
             "params_unique":    unique_params,
             "val_interval_tokens_B": CFG.val_interval_tokens / 1e9,
             "val_samples":      CFG.val_samples,
-            "linear_backend":   "quartet2_nvfp4",
         },
     )
     wandb.watch(model, log="gradients", log_freq=500)
@@ -349,7 +297,7 @@ def train() -> None:
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels    = batch["labels"].to(device, non_blocking=True)
 
-        # ── Forward (BF16 via Transformer Engine autocast) ────────────────────
+        # ── Forward ───────────────────────────────────────────────────────────
         with torch.autocast("cuda", dtype=torch.bfloat16):
             hidden = model(input_ids, return_logits=False)          # (B, T, D)
             loss   = fused_ce(
@@ -366,16 +314,10 @@ def train() -> None:
         tput_tokens  += batch_tokens
         loss_accum   += loss.item()
         micro_step   += 1
-    
+
         # ── Optimiser step every grad_accum micro-batches ──────────────────────
         if micro_step % CFG.grad_accum == 0:
             opt_step += 1
-
-            # ── Enable FP4 backward after warmup ──────────────────────────────
-            if opt_step == CFG.fp4_bwd_warmup:
-                n = enable_fp4_backward(model)
-                print(f"\n  FP4 backward enabled at step {opt_step} ({n} layers)\n")
-                wandb.log({"event/fp4_bwd_enabled": opt_step}, step=opt_step)
 
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), CFG.grad_clip
