@@ -21,7 +21,7 @@ from typing import Iterator, Dict, List
 DATASET_CONFIGS = [
     {
         "path": "OptimalScale/ClimbMix",
-        "name": "Nvidia-ClimbMix",
+        "name": "default",
         "split": "train",
         "text_field": "text",
         "weight": 1.0,
