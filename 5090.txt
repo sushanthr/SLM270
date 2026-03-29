@@ -1,0 +1,22 @@
+Baseline:
+        3B   :   43.67 ms forward, 114.98 ms forward+backward, 22.27 TFLOP |  193.6 TFLOp/s
+        7B   :   72.05 ms forward, 201.93 ms forward+backward, 39.79 TFLOP |  197.0 TFLOp/s
+        22B  :  169.16 ms forward, 443.64 ms forward+backward, 89.06 TFLOP |  200.7 TFLOp/s
+        52B  :  296.10 ms forward, 949.30 ms forward+backward, 159.15 TFLOP |  167.7 TFLOp/s
+
+3B:
+        nvfp4:   6.79 ms forward,  26.19 ms forward+backward <=>  850.1 TFLOp/s
+         gemm:   5.66 ms forward,  17.01 ms forward+backward <=> 1308.9 TFLOp/s
+        nvfp4: 642.75%   forward, 439.00%   forward+backward
+7B:
+        nvfp4:  11.42 ms forward,  42.90 ms forward+backward <=>  927.4 TFLOp/s
+         gemm:  10.05 ms forward,  30.22 ms forward+backward <=> 1316.7 TFLOp/s
+        nvfp4: 630.86%   forward, 470.67%   forward+backward
+22B:
+        nvfp4:  23.27 ms forward,  87.90 ms forward+backward <=> 1013.3 TFLOp/s
+         gemm:  21.50 ms forward,  65.29 ms forward+backward <=> 1364.0 TFLOp/s
+        nvfp4: 726.90%   forward, 504.74%   forward+backward
+52B:
+        nvfp4:  43.65 ms forward, 164.15 ms forward+backward <=>  969.6 TFLOp/s
+         gemm:  47.96 ms forward, 133.43 ms forward+backward <=> 1192.8 TFLOp/s
+        nvfp4: 678.39%   forward, 578.31%   forward+backward

@@ -33,8 +33,8 @@ class TrainConfig:
     seq_len: int        = 1024
 
     # Batch
-    batch_size: int     = 32
-    grad_accum: int     = 2                 # effective batch = 32 × 2 × 1024 = 65 536 tok
+    batch_size: int     = 64
+    grad_accum: int     = 1                 # effective batch = 64 × 1 × 1024 = 65 536 tok
 
     # Optimiser
     max_lr: float       = 3e-4
@@ -171,7 +171,7 @@ def replace_linear_with_quartet(model: torch.nn.Module) -> None:
 # ── Validation ────────────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def run_validation(model, val_batches, device) -> dict:
+def run_validation(model, val_batches, device, fused_ce, out_head_weight) -> dict:
     """
     Evaluates the model on the pre-built Wikipedia validation batches.
     Returns a dict with val/loss and val/perplexity.
@@ -185,15 +185,15 @@ def run_validation(model, val_batches, device) -> dict:
         labels    = batch["labels"].to(device, non_blocking=True)
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            logits = model(input_ids)
-            loss   = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                labels.reshape(-1),
-                reduction="sum",          # sum so we can weight by token count
+            hidden = model(input_ids, return_logits=False)            # (B, T, D)
+            loss   = fused_ce(
+                out_head_weight,
+                hidden.reshape(-1, hidden.shape[-1]),                 # (B*T, D)
+                labels.reshape(-1),                                    # (B*T,)
             )
 
         n_tokens      = labels.numel()
-        total_loss   += loss.item()
+        total_loss   += loss.item() * n_tokens   # fused_ce returns mean; convert to sum
         total_tokens += n_tokens
 
     model.train()
@@ -203,7 +203,6 @@ def run_validation(model, val_batches, device) -> dict:
         "val/loss":       avg_loss,
         "val/perplexity": math.exp(min(avg_loss, 20)),
     }
-
 
 # ── Main training loop ────────────────────────────────────────────────────────
 
@@ -227,7 +226,7 @@ def train() -> None:
     n_quartet = sum(1 for m in model.modules() if isinstance(m, Quartet_II_linear))
     print(f"Quartet-II  : {n_quartet} linear layers swapped to NVFP4")
 
-    model.gradient_checkpointing = False   # Liger fused CE handles the memory pressure
+    model.gradient_checkpointing = True
 
     # torch.compile fuses RMSNorm, SwiGLU, RoPE and attention kernels.
     # fullgraph=False allows graph breaks at Quartet's custom autograd boundaries.
@@ -367,7 +366,7 @@ def train() -> None:
         tput_tokens  += batch_tokens
         loss_accum   += loss.item()
         micro_step   += 1
-
+    
         # ── Optimiser step every grad_accum micro-batches ──────────────────────
         if micro_step % CFG.grad_accum == 0:
             opt_step += 1
@@ -418,7 +417,7 @@ def train() -> None:
 
             # ── Validation (every 1B tokens) ──────────────────────────────
             if tokens_seen >= next_val_tokens:
-                val_metrics = run_validation(model, val_batches, device)
+                val_metrics = run_validation(model, val_batches, device, fused_ce, out_head_weight)
                 print(
                     f"\n  [val @ {opt_step:,} steps / {format_tokens(tokens_seen)}]"
                     f"  loss={val_metrics['val/loss']:.4f}"
