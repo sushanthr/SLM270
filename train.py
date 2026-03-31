@@ -270,7 +270,7 @@ def train() -> None:
     if RESUME_CHECKPOINT:
         print(f"Loading checkpoint {RESUME_CHECKPOINT}…")
         ckpt = torch.load(RESUME_CHECKPOINT, map_location=device, weights_only=False)
-        model._orig_mod.load_state_dict(ckpt["model_state_dict"])
+        model.load_state_dict(ckpt["model_state_dict"])
         optimizer.load_state_dict(ckpt["optim_state_dict"])
         tokens_seen = ckpt["tokens_seen"]
         opt_step    = ckpt["opt_step"]
