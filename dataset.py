@@ -9,6 +9,8 @@ Validation: wikimedia/wikipedia 20231101.en — 1 000 random samples,
 also opened in streaming mode and packed identically.
 """
 
+import glob
+import os
 import queue
 import threading
 import torch
@@ -27,6 +29,8 @@ DATASET_CONFIGS = [
         "weight": 1.0,
     }
 ]
+
+_DATASET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset")
 
 
 class PackedStreamingDataset(IterableDataset):
@@ -48,12 +52,14 @@ class PackedStreamingDataset(IterableDataset):
     def _build_mixed_stream(self):
         streams, weights = [], []
         for cfg in DATASET_CONFIGS:
+            local_files = sorted(glob.glob(os.path.join(_DATASET_DIR, "part_*.jsonl")),
+                                 key=lambda p: int(os.path.basename(p).split("_")[1].split(".")[0]))
+            print(local_files)
             ds = load_dataset(
-                cfg["path"],
-                cfg["name"],
-                split=cfg["split"],
+                "json",
+                data_files=local_files,
+                split="train",
                 streaming=True,
-                trust_remote_code=True,
             )
             # Keep only the text field to reduce memory
             ds = ds.select_columns([cfg["text_field"]])

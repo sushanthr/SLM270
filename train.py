@@ -11,6 +11,7 @@ SLM270 training script.
 import os
 import math
 import time
+import itertools
 from dataclasses import dataclass
 
 import torch
@@ -59,6 +60,10 @@ class TrainConfig:
 
 
 CFG = TrainConfig()
+
+# ── Resume settings (set both to None for a fresh run) ───────────────────────
+RESUME_CHECKPOINT  = "checkpoints/ckpt_step00021799_5.000B.pt"
+WANDB_RESUME_RUN_ID = "1rclqqot"
 
 # Derived constants
 TOKENS_PER_OPT_STEP = CFG.batch_size * CFG.seq_len * CFG.grad_accum   # 262 144
@@ -227,7 +232,7 @@ def train() -> None:
           f"({sum(b['input_ids'].numel() for b in val_batches):,} tokens)")
 
     # ── WandB ─────────────────────────────────────────────────────────────────
-    wandb.init(
+    wandb_kwargs = dict(
         project=CFG.wandb_project,
         config={
             "total_tokens_B":   CFG.total_tokens / 1e9,
@@ -246,19 +251,35 @@ def train() -> None:
             "val_samples":      CFG.val_samples,
         },
     )
+    if WANDB_RESUME_RUN_ID:
+        wandb_kwargs["id"]     = WANDB_RESUME_RUN_ID
+        wandb_kwargs["resume"] = "must"
+    wandb.init(**wandb_kwargs)
     # wandb.watch(model, log="gradients", log_freq=500)
 
     # ── State ──────────────────────────────────────────────────────────────────
     model.train()
     optimizer.zero_grad(set_to_none=True)
 
-    tokens_seen     = 0
-    opt_step        = 0
-    micro_step      = 0
-    loss_accum      = 0.0
+    tokens_seen = 0
+    opt_step    = 0
+    micro_step  = 0
+    loss_accum  = 0.0
 
-    next_val_tokens  = CFG.val_interval_tokens
-    next_ckpt_tokens = CFG.ckpt_interval_tokens
+    # ── Resume from checkpoint ─────────────────────────────────────────────────
+    if RESUME_CHECKPOINT:
+        print(f"Loading checkpoint {RESUME_CHECKPOINT}…")
+        ckpt = torch.load(RESUME_CHECKPOINT, map_location=device, weights_only=False)
+        model._orig_mod.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optim_state_dict"])
+        tokens_seen = ckpt["tokens_seen"]
+        opt_step    = ckpt["opt_step"]
+        del ckpt
+        print(f"  → opt_step={opt_step:,}  tokens_seen={format_tokens(tokens_seen)}")
+
+    # Next val/ckpt boundaries (rounded up to the next interval from where we are)
+    next_val_tokens  = ((tokens_seen // CFG.val_interval_tokens)  + 1) * CFG.val_interval_tokens
+    next_ckpt_tokens = ((tokens_seen // CFG.ckpt_interval_tokens) + 1) * CFG.ckpt_interval_tokens
 
     # Throughput window
     tput_t0         = time.perf_counter()
@@ -267,6 +288,7 @@ def train() -> None:
     # ── Progress bar ───────────────────────────────────────────────────────────
     pbar = tqdm(
         total=CFG.total_tokens,
+        initial=tokens_seen,
         unit="tok",
         dynamic_ncols=True,
         bar_format=(
@@ -292,8 +314,40 @@ def train() -> None:
             f"  {tok_per_sec:>8,.0f} tok/s"
         )
 
+    # ── Create a persistent iterator so we can skip then continue ─────────────
+    loader_iter = iter(loader)
+
+    # ── Skip tokens already consumed before the crash ─────────────────────────
+    if tokens_seen > 0:
+        tokens_per_batch = CFG.batch_size * CFG.seq_len
+        batches_to_skip  = tokens_seen // tokens_per_batch
+        print(f"Skipping {batches_to_skip:,} batches to restore dataset position "
+              f"({format_tokens(tokens_seen)})…")
+        skip_pbar = tqdm(
+            total=batches_to_skip, desc="  skipping dataset",
+            unit="batch", dynamic_ncols=True,
+        )
+        for _ in itertools.islice(loader_iter, batches_to_skip):
+            skip_pbar.update(1)
+        skip_pbar.close()
+        print("  ✓ Dataset position restored.")
+
+    # ── Initial validation to confirm the checkpoint loaded correctly ──────────
+    if RESUME_CHECKPOINT:
+        print(f"\nInitial validation (checkpoint sanity-check)…")
+        val_metrics = run_validation(model, val_batches, device, fused_ce, out_head_weight)
+        print(
+            f"  [val @ resume / {format_tokens(tokens_seen)}]"
+            f"  loss={val_metrics['val/loss']:.4f}"
+            f"  ppl={val_metrics['val/perplexity']:.2f}\n"
+        )
+        wandb.log(
+            {**val_metrics, "tokens/seen_B": tokens_seen / 1e9},
+            step=opt_step,
+        )
+
     # ── Training ───────────────────────────────────────────────────────────────
-    for batch in loader:
+    for batch in loader_iter:
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels    = batch["labels"].to(device, non_blocking=True)
 

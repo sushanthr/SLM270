@@ -7,3 +7,5 @@ lib64/
 __pycache__/
 pyvenv.cfg
 lib64
+dataset/
+checkpoints/
