@@ -11,7 +11,6 @@ SLM270 training script.
 import os
 import math
 import time
-import itertools
 from dataclasses import dataclass
 
 import torch
@@ -207,17 +206,8 @@ def train() -> None:
         fused=True,
     )
 
-    # ── Tokeniser + DataLoader ─────────────────────────────────────────────────
+    # ── Tokeniser ─────────────────────────────────────────────────────────────
     tokenizer = SLM270Tokenizer(tokenizer_dir=".")
-    loader    = PrefetchLoader(
-        build_dataloader(
-            tokenizer,
-            seq_len=CFG.seq_len,
-            batch_size=CFG.batch_size,
-            seed=CFG.seed,
-        ),
-        buffer_size=4,
-    )
 
     # ── Validation batches (materialised once from Wikipedia stream) ───────────
     print(f"Building validation set ({CFG.val_samples} Wikipedia samples)…")
@@ -314,23 +304,46 @@ def train() -> None:
             f"  {tok_per_sec:>8,.0f} tok/s"
         )
 
-    # ── Create a persistent iterator so we can skip then continue ─────────────
-    loader_iter = iter(loader)
-
-    # ── Skip tokens already consumed before the crash ─────────────────────────
+    # ── DataLoader — fast-skip past already-seen docs ─────────────────────────
+    skip_samples = 0
     if tokens_seen > 0:
-        tokens_per_batch = CFG.batch_size * CFG.seq_len
-        batches_to_skip  = tokens_seen // tokens_per_batch
-        print(f"Skipping {batches_to_skip:,} batches to restore dataset position "
-              f"({format_tokens(tokens_seen)})…")
-        skip_pbar = tqdm(
-            total=batches_to_skip, desc="  skipping dataset",
-            unit="batch", dynamic_ncols=True,
+        # Sample 200 docs to estimate avg tokens per JSONL line (takes ~1 s).
+        # skip_samples = tokens_seen / avg_tokens_per_doc
+        # Packing buffer error (≤ seq_len tokens) is negligible at this scale.
+        import json as _json, glob as _glob, os as _os
+        _shards = sorted(
+            _glob.glob(_os.path.join(_os.path.dirname(_os.path.abspath("dataset.py")), "dataset", "part_*.jsonl")),
+            key=lambda p: int(_os.path.basename(p).split("_")[1].split(".")[0]),
         )
-        for _ in itertools.islice(loader_iter, batches_to_skip):
-            skip_pbar.update(1)
-        skip_pbar.close()
-        print("  ✓ Dataset position restored.")
+        _sample_tokens, _n = 0, 0
+        for _path in _shards:
+            with open(_path) as _f:
+                for _line in _f:
+                    _obj = _json.loads(_line)
+                    _ids = tokenizer.encode(_obj.get("text", ""))
+                    if _ids:
+                        _sample_tokens += len(_ids)
+                        _n += 1
+                    if _n >= 200:
+                        break
+            if _n >= 200:
+                break
+        avg_tokens_per_doc = _sample_tokens / _n
+        skip_samples = int(tokens_seen / avg_tokens_per_doc)
+        print(f"Avg tokens/doc: {avg_tokens_per_doc:.0f}  →  "
+              f"skipping {skip_samples:,} JSONL docs (no tokenisation for skipped docs)")
+
+    loader = PrefetchLoader(
+        build_dataloader(
+            tokenizer,
+            seq_len=CFG.seq_len,
+            batch_size=CFG.batch_size,
+            seed=CFG.seed,
+            skip_samples=skip_samples,
+        ),
+        buffer_size=4,
+    )
+    loader_iter = iter(loader)
 
     # ── Initial validation to confirm the checkpoint loaded correctly ──────────
     if RESUME_CHECKPOINT:

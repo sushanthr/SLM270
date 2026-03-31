@@ -41,11 +41,13 @@ class PackedStreamingDataset(IterableDataset):
         labels    : LongTensor[seq_len]   (input_ids shifted left by 1)
     """
 
-    def __init__(self, tokenizer, seq_len: int = 1024, seed: int = 42):
+    def __init__(self, tokenizer, seq_len: int = 1024, seed: int = 42,
+                 skip_samples: int = 0):
         super().__init__()
-        self.tokenizer = tokenizer
-        self.seq_len = seq_len
-        self.seed = seed
+        self.tokenizer    = tokenizer
+        self.seq_len      = seq_len
+        self.seed         = seed
+        self.skip_samples = skip_samples
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
@@ -83,7 +85,14 @@ class PackedStreamingDataset(IterableDataset):
         needed = self.seq_len + 1          # need 1 extra token for the label shift
         buffer: list[int] = []
 
-        for sample in self._build_mixed_stream():
+        stream = iter(self._build_mixed_stream())
+
+        # Fast-skip: HF parses JSON but we never call tokenizer.encode() here
+        if self.skip_samples > 0:
+            for _ in range(self.skip_samples):
+                next(stream, None)
+
+        for sample in stream:
             text: str = sample.get("text") or ""
             if not text.strip():
                 continue
@@ -206,17 +215,21 @@ class PrefetchLoader:
 
 def build_dataloader(
     tokenizer,
-    seq_len: int = 1024,
-    batch_size: int = 8,
-    seed: int = 42,
+    seq_len:      int = 1024,
+    batch_size:   int = 8,
+    seed:         int = 42,
+    skip_samples: int = 0,
 ) -> DataLoader:
     """
     Returns a DataLoader backed by the packed streaming dataset.
+    Pass skip_samples to fast-forward past already-seen docs on resume
+    (HF parses JSON but tokenizer.encode is never called for skipped samples).
 
     Note: num_workers=0 is required for HuggingFace streaming datasets unless
     you add explicit worker-rank sharding via worker_init_fn.
     """
-    dataset = PackedStreamingDataset(tokenizer, seq_len=seq_len, seed=seed)
+    dataset = PackedStreamingDataset(tokenizer, seq_len=seq_len, seed=seed,
+                                     skip_samples=skip_samples)
     return DataLoader(
         dataset,
         batch_size=batch_size,
