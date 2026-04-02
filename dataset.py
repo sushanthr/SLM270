@@ -89,7 +89,9 @@ class PackedStreamingDataset(IterableDataset):
 
         # Fast-skip: HF parses JSON but we never call tokenizer.encode() here
         if self.skip_samples > 0:
-            for _ in range(self.skip_samples):
+            from tqdm import tqdm
+            for _ in tqdm(range(self.skip_samples), desc="Seeking dataset", unit="doc",
+                          dynamic_ncols=True):
                 next(stream, None)
 
         for sample in stream:

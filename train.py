@@ -28,8 +28,9 @@ from dataset import build_dataloader, build_validation_batches, PrefetchLoader
 @dataclass
 class TrainConfig:
     # Tokens / budget
-    total_tokens: int   = 50_000_000_000    # 50 B  (10× Chinchilla for 270 M params)
-    seq_len: int        = 1024
+    total_tokens: int          = 50_000_000_000    # 50 B  (10× Chinchilla for 270 M params)
+    lr_flat_until_tokens: int  = 20_000_000_000    # hold max_lr until 20 B, then cosine decay
+    seq_len: int               = 1024
 
     # Batch
     batch_size: int     = 224
@@ -61,7 +62,7 @@ class TrainConfig:
 CFG = TrainConfig()
 
 # ── Resume settings (set both to None for a fresh run) ───────────────────────
-RESUME_CHECKPOINT  = "checkpoints/ckpt_step00021799_5.000B.pt"
+RESUME_CHECKPOINT  = "checkpoints/ckpt_step00061036_14.000B.pt"
 WANDB_RESUME_RUN_ID = "1rclqqot"
 
 # Derived constants
@@ -72,12 +73,15 @@ TOTAL_OPT_STEPS     = CFG.total_tokens // TOKENS_PER_OPT_STEP         # ≈ 190 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def cosine_lr(opt_step: int) -> float:
-    """Linear warmup → cosine decay to min_lr."""
+    """Linear warmup → flat at max_lr until lr_flat_until_tokens → cosine decay to min_lr."""
+    decay_start_step = CFG.lr_flat_until_tokens // TOKENS_PER_OPT_STEP
     if opt_step < CFG.warmup_steps:
         return CFG.max_lr * opt_step / max(1, CFG.warmup_steps)
+    if opt_step < decay_start_step:
+        return CFG.max_lr
     if opt_step >= TOTAL_OPT_STEPS:
         return CFG.min_lr
-    progress = (opt_step - CFG.warmup_steps) / max(1, TOTAL_OPT_STEPS - CFG.warmup_steps)
+    progress = (opt_step - decay_start_step) / max(1, TOTAL_OPT_STEPS - decay_start_step)
     coeff    = 0.5 * (1.0 + math.cos(math.pi * progress))
     return CFG.min_lr + coeff * (CFG.max_lr - CFG.min_lr)
 
