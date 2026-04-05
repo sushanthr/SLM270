@@ -1,8 +1,11 @@
 """
 SLM270 Supervised Fine-Tuning (SFT) script.
   - Starts from the 26B-token pretrained checkpoint
-  - Data mixture: SmolTalk + GSM8K x4 + MMLU x3 + identity x2 (nanochat task classes)
+  - Data mixture: SmolTalk + GSM8KToolCall x4 + MMLU x3 + identity x2
+    + OrcaMathRewritten (if parquet present)
   - Loss masked to assistant turns only; best-fit sequence packing
+  - Tool-call turns trained on (mask=1); tool-response turns masked out (mask=0)
+    so the model learns to call tools and write explanations, not to echo results
   - BF16 autocast + Liger fused linear CE (no logit materialisation)
   - LR schedule: linear warmup → flat → linear warmdown (progress-based)
   - WandB metrics; checkpoints saved with "sft_" prefix
@@ -22,13 +25,41 @@ from SLM270 import Gemma3Model, GEMMA3_CONFIG_270M, SLM270Tokenizer
 _NANOCHAT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "nanochat")
 sys.path.insert(0, _NANOCHAT)
 from tasks.common import TaskMixture
-from tasks.gsm8k import GSM8K
 from tasks.mmlu import MMLU
 from tasks.smoltalk import SmolTalk
 from tasks.customjson import CustomJSON
+from tasks.spellingbee import SimpleSpelling, SpellingBee
+
+# SLM270-specific tool-call task classes
+from gsm8k_toolcall import GSM8KToolCall
+from orca_math import OrcaMathRewritten
 
 
 # ── Configuration ─────────────────────────────────────────────────────────────
+
+# Stub so pickle can deserialize pretrain checkpoints saved by train.py (__main__.TrainConfig)
+@dataclass
+class TrainConfig:
+    total_tokens: int = 50_000_000_000
+    lr_flat_until_tokens: int = 14_000_000_000
+    seq_len: int = 1024
+    batch_size: int = 224
+    grad_accum: int = 1
+    max_lr: float = 1e-4
+    min_lr: float = 3e-5
+    warmup_steps: int = 500
+    weight_decay: float = 0.1
+    grad_clip: float = 1.0
+    betas: tuple = (0.9, 0.95)
+    checkpoint_dir: str = "checkpoints"
+    ckpt_interval_tokens: int = 1_000_000_000
+    ckpt_keep: int = 10
+    val_interval_tokens: int = 1_000_000_000
+    val_samples: int = 1_000
+    seed: int = 42
+    wandb_project: str = "SLM270"
+    log_every: int = 10
+
 
 @dataclass
 class SFTConfig:
@@ -81,38 +112,41 @@ TOKENS_PER_OPT_STEP = CFG.batch_size * CFG.seq_len * CFG.grad_accum   # ≈ 65 5
 
 # ── Conversation rendering ────────────────────────────────────────────────────
 
-def _content_to_str(content) -> str:
-    """Flatten structured content (GSM8K tool-call parts) to plain text."""
+def _user_content_to_str(content) -> str:
+    """Flatten user/system content to a plain string (user turns are never structured)."""
     if isinstance(content, str):
         return content
-    # list of dicts with 'type' and 'text'
-    parts = []
-    for p in content:
-        t = p.get("type", "text")
-        text = p.get("text", "")
-        if t == "text":
-            parts.append(text)
-        elif t == "python":
-            parts.append(f"<<{text}")
-        elif t == "python_output":
-            parts.append(f"={text}>>")
-        else:
-            parts.append(text)
-    return "".join(parts)
+    # Fallback: join any text parts (shouldn't normally happen for user turns)
+    return "".join(p.get("text", "") for p in content if isinstance(p, dict))
 
 
 def render_conversation(raw_tok, conversation: dict):
     """
     Tokenise a conversation and return (token_ids, loss_mask).
-    loss_mask[i] = 1  → assistant token (compute loss)
-    loss_mask[i] = 0  → user / system token (masked out)
+
+    loss_mask[i] = 1  → model-generated token (compute loss):
+                        user/system prefix, tool_call blocks, plain answer text
+    loss_mask[i] = 0  → environment-provided token (masked out):
+                        user/system turns, tool_response blocks
 
     Chat format:
-      [BOS] <|system|>…<|end|>   (optional)
-      <|user|>…<|end|><|assistant|>RESP<|end|>   (repeat for multi-turn)
+      [BOS] <|system|>…<|end|>                          (optional, mask=0)
+      <|user|>…<|end|><|assistant|>                     (mask=0)
+        <|tool_call|>…<|/tool_call|>                   (mask=1)
+        <|tool_response|>…<|/tool_response|>            (mask=0)
+        … (repeat for multi-round) …
+        plain answer text                               (mask=1)
+      <|end|>                                           (mask=1)
+
+    Assistant content may be:
+      - str                  → plain text response
+      - list[dict]           → structured parts:
+          {"type": "tool_call",     "text": "..."}  → <|tool_call|>…<|/tool_call|>  mask=1
+          {"type": "tool_response", "text": "..."}  → <|tool_response|>…<|/tool_response|> mask=0
+          {"type": "text",          "text": "..."}  → plain text  mask=1
     """
     messages = conversation["messages"]
-    tok = raw_tok  # PreTrainedTokenizerFast
+    tok = raw_tok
 
     def enc(text: str, first: bool) -> list[int]:
         return tok.encode(text, add_special_tokens=first)
@@ -124,7 +158,7 @@ def render_conversation(raw_tok, conversation: dict):
     # Optional system message
     start = 0
     if messages and messages[0]["role"] == "system":
-        sys_text = _content_to_str(messages[0]["content"])
+        sys_text = _user_content_to_str(messages[0]["content"])
         ids = enc(f"<|system|>{sys_text}<|end|>", first_piece)
         all_ids.extend(ids)
         all_mask.extend([0] * len(ids))
@@ -133,17 +167,63 @@ def render_conversation(raw_tok, conversation: dict):
 
     rest = messages[start:]
     for i in range(0, len(rest), 2):
-        # User turn
-        user_text = _content_to_str(rest[i]["content"])
+        # ── User turn (mask=0) ────────────────────────────────────────────
+        user_text = _user_content_to_str(rest[i]["content"])
         ids = enc(f"<|user|>{user_text}<|end|><|assistant|>", first_piece)
         all_ids.extend(ids)
         all_mask.extend([0] * len(ids))
         first_piece = False
 
-        # Assistant turn (compute loss here)
-        if i + 1 < len(rest):
-            asst_text = _content_to_str(rest[i + 1]["content"])
-            ids = enc(f"{asst_text}<|end|>", False)
+        # ── Assistant turn ────────────────────────────────────────────────
+        if i + 1 >= len(rest):
+            continue
+
+        content = rest[i + 1]["content"]
+
+        if isinstance(content, str):
+            # Plain text response — all tokens are trained on
+            ids = enc(f"{content}<|end|>", False)
+            all_ids.extend(ids)
+            all_mask.extend([1] * len(ids))
+
+        elif isinstance(content, list):
+            # Structured content with tool_call / tool_response / text parts
+            for part in content:
+                ptype = part.get("type", "text")
+                text  = part.get("text", "")
+
+                if ptype == "tool_call":
+                    # Model generates the tool call → train on it (mask=1)
+                    ids = enc(f"<|tool_call|>{text}<|/tool_call|>", False)
+                    all_ids.extend(ids)
+                    all_mask.extend([1] * len(ids))
+
+                elif ptype == "tool_response":
+                    # Environment provides the result → mask out (mask=0)
+                    ids = enc(f"<|tool_response|>{text}<|/tool_response|>", False)
+                    all_ids.extend(ids)
+                    all_mask.extend([0] * len(ids))
+
+                elif ptype == "python":
+                    # SpellingBee inline expression — render as <<expr (mask=1)
+                    ids = enc(f"<<{text}", False)
+                    all_ids.extend(ids)
+                    all_mask.extend([1] * len(ids))
+
+                elif ptype == "python_output":
+                    # SpellingBee inline result — render as =result>> (mask=1)
+                    ids = enc(f"={text}>>", False)
+                    all_ids.extend(ids)
+                    all_mask.extend([1] * len(ids))
+
+                else:
+                    # "text" → plain answer text, train on it
+                    ids = enc(text, False)
+                    all_ids.extend(ids)
+                    all_mask.extend([1] * len(ids))
+
+            # Closing <|end|> is part of the assistant turn → train on it
+            ids = enc("<|end|>", False)
             all_ids.extend(ids)
             all_mask.extend([1] * len(ids))
 
@@ -372,26 +452,76 @@ def train():
     del ckpt
     print(f"  → pretrain tokens seen: {format_tokens(pretrain_tokens)}")
 
+    # ── Dataset file inventory ───────────────────────────────────────────────
+    _here = os.path.dirname(os.path.abspath(__file__))
+    identity_path = os.path.join(_here, CFG.identity_file)
+    orca_path     = os.path.join(_here, "orca_math_rewritten_llama.parquet")
+    _cache_words  = os.path.expanduser("~/.cache/nanochat/words_alpha.txt")
+
+    print("\n── Dataset inventory ────────────────────────────────────────────")
+    _files = [
+        ("SmolTalk (train)",         None,           True,  "HuggingFace auto-download"),
+        ("MMLU auxiliary_train",     None,           True,  "HuggingFace auto-download"),
+        ("GSM8K (tool-call)",        None,           True,  "HuggingFace auto-download"),
+        ("SimpleSpelling word list", _cache_words,   True,  "auto-downloaded on first use"),
+        ("SpellingBee word list",    _cache_words,   True,  "same file as SimpleSpelling"),
+        ("Identity conversations",   identity_path,  True,  CFG.identity_file),
+        ("Orca Math rewritten",      orca_path,      False, "orca_math_rewritten_llama.parquet"),
+    ]
+    _any_missing_required = False
+    for label, path, required, note in _files:
+        if path is None:
+            status = "✓ remote"
+        elif os.path.exists(path):
+            size_mb = os.path.getsize(path) / 1e6
+            status = f"✓ found  ({size_mb:.1f} MB)"
+        elif required:
+            status = "✗ MISSING  ← required"
+            _any_missing_required = True
+        else:
+            status = "– not found (optional, skipping)"
+        print(f"  {status:<40}  {label}  [{note}]")
+    print("─" * 68)
+    if _any_missing_required:
+        raise FileNotFoundError(
+            f"Required dataset file missing: {identity_path}\n"
+            f"Place it in the SLM270/ directory and re-run."
+        )
+    print()
+
     # ── Datasets ────────────────────────────────────────────────────────────
     print("Loading training datasets…")
-    identity_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 CFG.identity_file)
+
+    # GSM8K with tool calls (replaces plain GSM8K)
+    gsm8k_train = GSM8KToolCall(split="train")
+
     train_tasks = [
         SmolTalk(split="train"),
         CustomJSON(filepath=identity_path),
         CustomJSON(filepath=identity_path),          # 2 epochs of identity
         *[MMLU(subset="all", split="auxiliary_train")
           for _ in range(CFG.mmlu_epochs)],
-        *[GSM8K(subset="main", split="train")
-          for _ in range(CFG.gsm8k_epochs)],
+        *[gsm8k_train for _ in range(CFG.gsm8k_epochs)],
+        SimpleSpelling(size=200_000, split="train"),
+        SpellingBee(size=80_000,    split="train"),
     ]
+
+    # Orca Math (optional — only included if the parquet file exists)
+    if os.path.exists(orca_path):
+        print(f"  Found Orca Math parquet: {orca_path}")
+        train_tasks.append(OrcaMathRewritten(parquet_path=orca_path))
+    else:
+        print(f"  Orca Math parquet not found ({orca_path}), skipping.")
+
     train_dataset = TaskMixture(train_tasks)
     print(f"  → {len(train_dataset):,} training conversations")
 
     val_tasks = [
         SmolTalk(split="test"),
         MMLU(subset="all", split="test", stop=5200),
-        GSM8K(subset="main", split="test", stop=420),
+        GSM8KToolCall(split="test"),
+        SimpleSpelling(size=10_000, split="test"),
+        SpellingBee(size=4_000,    split="test"),
     ]
     val_dataset = TaskMixture(val_tasks)
     print(f"  → {len(val_dataset):,} validation conversations")
