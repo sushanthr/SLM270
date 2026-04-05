@@ -29,7 +29,7 @@ from dataset import build_dataloader, build_validation_batches, PrefetchLoader
 class TrainConfig:
     # Tokens / budget
     total_tokens: int          = 50_000_000_000    # 50 B  (10× Chinchilla for 270 M params)
-    lr_flat_until_tokens: int  = 20_000_000_000    # hold max_lr until 20 B, then cosine decay
+    lr_flat_until_tokens: int  = 14_000_000_000    # hold max_lr until 14 B, then cosine decay
     seq_len: int               = 1024
 
     # Batch
@@ -37,9 +37,9 @@ class TrainConfig:
     grad_accum: int     = 1                 # effective batch = 64 × 1 × 1024 = 65 536 tok
 
     # Optimiser
-    max_lr: float       = 3e-4
+    max_lr: float       = 1e-4
     min_lr: float       = 3e-5
-    warmup_steps: int   = 2_000             # optimiser steps (not micro-steps)
+    warmup_steps: int   = 500               # optimiser steps (not micro-steps)
     weight_decay: float = 0.1
     grad_clip: float    = 1.0
     betas: tuple        = (0.9, 0.95)
@@ -47,7 +47,7 @@ class TrainConfig:
     # Checkpointing
     checkpoint_dir: str  = "checkpoints"
     ckpt_interval_tokens: int = 1_000_000_000   # checkpoint every 1B tokens
-    ckpt_keep: int           = 2                # number of recent checkpoints to retain
+    ckpt_keep: int           = 10               # number of recent checkpoints to retain
 
     # Validation
     val_interval_tokens: int = 1_000_000_000    # run validation every 1B tokens
@@ -62,8 +62,9 @@ class TrainConfig:
 CFG = TrainConfig()
 
 # ── Resume settings (set both to None for a fresh run) ───────────────────────
-RESUME_CHECKPOINT  = "checkpoints/ckpt_step00061036_14.000B.pt"
-WANDB_RESUME_RUN_ID = "1rclqqot"
+RESUME_CHECKPOINT      = "checkpoints/ckpt_step00061036_14.000B.pt"
+RESUME_WEIGHTS_ONLY    = True   # True = load model weights only, reset optimizer
+WANDB_RESUME_RUN_ID    = "1rclqqot"
 
 # Derived constants
 TOKENS_PER_OPT_STEP = CFG.batch_size * CFG.seq_len * CFG.grad_accum   # 262 144
@@ -265,7 +266,8 @@ def train() -> None:
         print(f"Loading checkpoint {RESUME_CHECKPOINT}…")
         ckpt = torch.load(RESUME_CHECKPOINT, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
-        optimizer.load_state_dict(ckpt["optim_state_dict"])
+        if not RESUME_WEIGHTS_ONLY:
+            optimizer.load_state_dict(ckpt["optim_state_dict"])
         tokens_seen = ckpt["tokens_seen"]
         opt_step    = ckpt["opt_step"]
         del ckpt

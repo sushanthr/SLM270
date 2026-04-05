@@ -9,3 +9,4 @@ pyvenv.cfg
 lib64
 dataset/
 checkpoints/
+checkpoint_backups/
