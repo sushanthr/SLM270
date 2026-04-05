@@ -181,6 +181,66 @@ def build_validation_batches(
     return batches
 
 
+# ── OpenWebText validation dataset ───────────────────────────────────────────
+
+def build_openwebtext_validation_batches(
+    tokenizer,
+    seq_len: int = 1024,
+    n_samples: int = 1000,
+    batch_size: int = 8,
+    seed: int = 42,
+) -> List[Dict[str, torch.Tensor]]:
+    """
+    Streams Skylion007/openwebtext, shuffles with a fixed seed, takes the first
+    `n_samples` documents, packs them into seq_len chunks, and returns a list of
+    pre-built batches.  Drop-in replacement for build_validation_batches but on
+    OpenWebText so results are comparable to nanoGPT's val numbers.
+    """
+    ds = load_dataset(
+        "Skylion007/openwebtext",
+        split="train",
+        streaming=True,
+        trust_remote_code=True,
+    )
+    ds = ds.shuffle(seed=seed, buffer_size=10_000)
+
+    eos_id = tokenizer.eos_token_id
+    needed = seq_len + 1
+    buffer: list[int] = []
+    chunks: list[Dict[str, torch.Tensor]] = []
+
+    for sample in ds.take(n_samples):
+        text: str = sample.get("text") or ""
+        if not text.strip():
+            continue
+        ids: list[int] = tokenizer.encode(text)
+        if not ids:
+            continue
+        if eos_id is not None:
+            ids.append(eos_id)
+        buffer.extend(ids)
+
+        while len(buffer) >= needed:
+            chunk  = buffer[:needed]
+            buffer = buffer[needed:]
+            chunks.append({
+                "input_ids": torch.tensor(chunk[:-1], dtype=torch.long),
+                "labels":    torch.tensor(chunk[1:],  dtype=torch.long),
+            })
+
+    batches: List[Dict[str, torch.Tensor]] = []
+    for i in range(0, len(chunks), batch_size):
+        group = chunks[i : i + batch_size]
+        if not group:
+            continue
+        batches.append({
+            "input_ids": torch.stack([g["input_ids"] for g in group]),
+            "labels":    torch.stack([g["labels"]    for g in group]),
+        })
+
+    return batches
+
+
 # ── Prefetch wrapper ──────────────────────────────────────────────────────────
 
 class PrefetchLoader:
