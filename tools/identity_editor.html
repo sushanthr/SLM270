@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Identity Conversations Editor</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0f1117;
+    --panel:     #1a1d27;
+    --border:    #2e3245;
+    --accent:    #5b7fff;
+    --accent2:   #7c5bff;
+    --user-bg:   #1e2235;
+    --asst-bg:   #1a2e1e;
+    --user-hdr:  #4a7fff;
+    --asst-hdr:  #4caf70;
+    --danger:    #e05555;
+    --text:      #d4d8f0;
+    --muted:     #6b7094;
+    --radius:    8px;
+  }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  header h1 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-left: auto;
+  }
+
+  button {
+    font-size: 0.8rem;
+    font-family: inherit;
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    white-space: nowrap;
+  }
+  button:hover { background: #252a3d; border-color: var(--accent); }
+  button:active { transform: scale(0.97); }
+
+  .btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover { background: #3d64ff; border-color: #3d64ff; }
+
+  .btn-danger {
+    background: transparent;
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+  .btn-danger:hover { background: #2e1a1a; }
+
+  .btn-success {
+    background: #2a6b3a;
+    border-color: #3a8a50;
+    color: #a8e6ba;
+  }
+  .btn-success:hover { background: #2f7a42; }
+
+  /* File input */
+  label.file-label {
+    font-size: 0.8rem;
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    white-space: nowrap;
+  }
+  label.file-label:hover { background: #252a3d; border-color: var(--accent); }
+  input[type="file"] { display: none; }
+
+  /* Nav bar */
+  .nav-bar {
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .nav-counter {
+    font-size: 0.85rem;
+    color: var(--muted);
+    min-width: 120px;
+  }
+
+  .nav-counter span { color: var(--text); font-weight: 600; }
+
+  .jump-input {
+    width: 70px;
+    font-size: 0.8rem;
+    font-family: inherit;
+    padding: 5px 8px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: #12151e;
+    color: var(--text);
+    outline: none;
+  }
+  .jump-input:focus { border-color: var(--accent); }
+
+  .search-input {
+    flex: 1;
+    min-width: 160px;
+    max-width: 300px;
+    font-size: 0.8rem;
+    font-family: inherit;
+    padding: 5px 10px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: #12151e;
+    color: var(--text);
+    outline: none;
+  }
+  .search-input:focus { border-color: var(--accent); }
+
+  .search-info { font-size: 0.75rem; color: var(--muted); }
+
+  /* Main layout */
+  .main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Empty state */
+  .empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--muted);
+  }
+  .empty-state svg { opacity: 0.3; }
+  .empty-state p { font-size: 0.95rem; }
+
+  /* Conversation editor */
+  #conv-editor {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .conv-title {
+    font-size: 0.75rem;
+    color: var(--muted);
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .msg-card {
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  .msg-card.role-user   { background: var(--user-bg); }
+  .msg-card.role-assistant { background: var(--asst-bg); }
+  .msg-card.role-system { background: #1e1a2e; }
+
+  .msg-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .role-badge {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+  .role-user .role-badge     { background: #1b2f5a; color: var(--user-hdr); }
+  .role-assistant .role-badge { background: #1a3325; color: var(--asst-hdr); }
+  .role-system .role-badge   { background: #2a1a3a; color: #b07fff; }
+
+  .role-select {
+    font-size: 0.75rem;
+    font-family: inherit;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: #12151e;
+    color: var(--text);
+    cursor: pointer;
+    margin-left: auto;
+  }
+
+  .msg-body {
+    display: flex;
+    flex-direction: column;
+  }
+
+  textarea.msg-content {
+    width: 100%;
+    min-height: 80px;
+    padding: 12px;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 0.875rem;
+    line-height: 1.55;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    resize: vertical;
+    outline: none;
+  }
+
+  .msg-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    padding: 4px 8px;
+    border-top: 1px solid var(--border);
+  }
+
+  .char-count { font-size: 0.7rem; color: var(--muted); margin-right: auto; }
+
+  /* Add turn controls */
+  .add-turn-bar {
+    display: flex;
+    gap: 8px;
+    padding: 4px 0;
+    justify-content: center;
+  }
+
+  /* Bottom toolbar */
+  .bottom-bar {
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .modified-badge {
+    font-size: 0.75rem;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: #3a2a10;
+    color: #e0a855;
+    border: 1px solid #6a4a1a;
+  }
+
+  /* Toast */
+  #toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #2a3250;
+    border: 1px solid var(--accent);
+    color: var(--text);
+    padding: 8px 18px;
+    border-radius: var(--radius);
+    font-size: 0.8rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+    z-index: 1000;
+  }
+  #toast.show { opacity: 1; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Identity Conversations Editor</h1>
+  <div class="header-actions">
+    <label class="file-label" for="file-input">📂 Load JSONL</label>
+    <input type="file" id="file-input" accept=".jsonl,.json">
+    <button class="btn-danger" id="btn-delete" title="Delete current conversation" style="display:none">🗑 Delete Conv</button>
+    <button id="btn-add-conv" style="display:none">＋ New Conv</button>
+    <button class="btn-success" id="btn-export" style="display:none">💾 Export JSONL</button>
+  </div>
+</header>
+
+<div class="nav-bar" id="nav-bar" style="display:none">
+  <button id="btn-prev">◀ Prev</button>
+  <span class="nav-counter">Conv <span id="idx-display">1</span> / <span id="total-display">1</span></span>
+  <button id="btn-next">Next ▶</button>
+  <label style="font-size:0.8rem;color:var(--muted)">Go to:</label>
+  <input type="number" class="jump-input" id="jump-input" min="1" placeholder="#" title="Jump to conversation number">
+  <input type="text" class="search-input" id="search-input" placeholder="Search conversations…">
+  <span class="search-info" id="search-info"></span>
+</div>
+
+<div class="main">
+  <div class="empty-state" id="empty-state">
+    <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+    </svg>
+    <p>Load a <code>.jsonl</code> file to get started</p>
+  </div>
+
+  <div id="conv-editor" style="display:none"></div>
+</div>
+
+<div class="bottom-bar" id="bottom-bar" style="display:none">
+  <span id="modified-badge" class="modified-badge" style="display:none">● Unsaved changes</span>
+  <button id="btn-add-user" style="margin-left:auto">＋ User turn</button>
+  <button id="btn-add-asst">＋ Assistant turn</button>
+  <button id="btn-discard" class="btn-danger">↩ Discard changes</button>
+  <button id="btn-save" class="btn-primary">✓ Save conv</button>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let conversations = [];      // array of message arrays
+let currentIdx    = 0;
+let workingCopy   = null;    // deep-copy of current conversation being edited
+let modified      = false;
+let searchResults = [];      // indices into conversations matching search
+let searchQuery   = "";
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function deepCopy(x) { return JSON.parse(JSON.stringify(x)); }
+
+function toast(msg, duration = 2000) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), duration);
+}
+
+function setModified(flag) {
+  modified = flag;
+  document.getElementById('modified-badge').style.display = flag ? '' : 'none';
+}
+
+// ── Load file ──────────────────────────────────────────────────────────────
+document.getElementById('file-input').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const lines = ev.target.result.split('\n').filter(l => l.trim());
+    try {
+      conversations = lines.map((l, i) => {
+        const parsed = JSON.parse(l);
+        // Accept either bare array or {messages:[...]} wrapper
+        if (Array.isArray(parsed)) return parsed;
+        if (parsed.messages && Array.isArray(parsed.messages)) return parsed.messages;
+        throw new Error(`Line ${i+1}: unexpected format`);
+      });
+    } catch(err) {
+      toast('Parse error: ' + err.message, 4000);
+      return;
+    }
+    currentIdx = 0;
+    searchQuery = "";
+    searchResults = [];
+    document.getElementById('search-input').value = "";
+    document.getElementById('search-info').textContent = "";
+    showUI(true);
+    updateTotal();
+    loadConversation(0);
+    toast(`Loaded ${conversations.length} conversations`);
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+});
+
+// ── Show/hide UI ───────────────────────────────────────────────────────────
+function showUI(show) {
+  ['nav-bar','bottom-bar','btn-delete','btn-add-conv','btn-export'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = show ? '' : 'none';
+  });
+  document.getElementById('empty-state').style.display  = show ? 'none' : '';
+  document.getElementById('conv-editor').style.display  = show ? '' : 'none';
+}
+
+function updateTotal() {
+  document.getElementById('total-display').textContent = conversations.length;
+}
+
+// ── Load / render conversation ─────────────────────────────────────────────
+function loadConversation(idx) {
+  if (idx < 0 || idx >= conversations.length) return;
+  currentIdx  = idx;
+  workingCopy = deepCopy(conversations[idx]);
+  setModified(false);
+  renderEditor();
+  document.getElementById('idx-display').textContent = idx + 1;
+  const ji = document.getElementById('jump-input');
+  ji.value = idx + 1;
+}
+
+function renderEditor() {
+  const editor = document.getElementById('conv-editor');
+  editor.innerHTML = '';
+
+  const title = document.createElement('div');
+  title.className = 'conv-title';
+  title.innerHTML = `<span>Conversation ${currentIdx + 1}</span><span>${workingCopy.length} turns</span>`;
+  editor.appendChild(title);
+
+  workingCopy.forEach((msg, i) => {
+    editor.appendChild(makeMsgCard(msg, i));
+    // Add-between button (not after last)
+    if (i < workingCopy.length - 1) {
+      editor.appendChild(makeAddBetweenBar(i + 1));
+    }
+  });
+
+  editor.scrollTop = 0;
+}
+
+function makeMsgCard(msg, idx) {
+  const role = msg.role || 'user';
+  const card = document.createElement('div');
+  card.className = `msg-card role-${role}`;
+  card.dataset.idx = idx;
+
+  card.innerHTML = `
+    <div class="msg-header">
+      <span class="role-badge">${role}</span>
+      <select class="role-select" title="Change role">
+        <option value="user"      ${role==='user'      ? 'selected':''}>user</option>
+        <option value="assistant" ${role==='assistant' ? 'selected':''}>assistant</option>
+        <option value="system"    ${role==='system'    ? 'selected':''}>system</option>
+      </select>
+    </div>
+    <div class="msg-body">
+      <textarea class="msg-content" rows="4" spellcheck="true">${escHtml(getContentStr(msg.content))}</textarea>
+    </div>
+    <div class="msg-footer">
+      <span class="char-count">0 chars</span>
+      <button class="btn-danger" data-action="delete-msg" title="Delete this turn" style="padding:3px 10px;font-size:0.75rem">✕</button>
+      <button data-action="move-up"   title="Move up"   style="padding:3px 8px;font-size:0.75rem">↑</button>
+      <button data-action="move-down" title="Move down" style="padding:3px 8px;font-size:0.75rem">↓</button>
+    </div>`;
+
+  const ta = card.querySelector('textarea');
+  const cc = card.querySelector('.char-count');
+  const updateCC = () => { cc.textContent = ta.value.length + ' chars'; };
+  updateCC();
+
+  ta.addEventListener('input', () => {
+    updateCC();
+    workingCopy[idx].content = ta.value;
+    setModified(true);
+  });
+
+  card.querySelector('.role-select').addEventListener('change', (e) => {
+    workingCopy[idx].role = e.target.value;
+    card.className = `msg-card role-${e.target.value}`;
+    card.querySelector('.role-badge').textContent = e.target.value;
+    setModified(true);
+  });
+
+  card.querySelector('[data-action="delete-msg"]').addEventListener('click', () => {
+    if (workingCopy.length <= 1) { toast('Cannot delete the only turn'); return; }
+    workingCopy.splice(idx, 1);
+    setModified(true);
+    renderEditor();
+  });
+
+  card.querySelector('[data-action="move-up"]').addEventListener('click', () => {
+    if (idx === 0) return;
+    [workingCopy[idx-1], workingCopy[idx]] = [workingCopy[idx], workingCopy[idx-1]];
+    setModified(true);
+    renderEditor();
+  });
+
+  card.querySelector('[data-action="move-down"]').addEventListener('click', () => {
+    if (idx === workingCopy.length - 1) return;
+    [workingCopy[idx], workingCopy[idx+1]] = [workingCopy[idx+1], workingCopy[idx]];
+    setModified(true);
+    renderEditor();
+  });
+
+  return card;
+}
+
+function makeAddBetweenBar(insertAt) {
+  const bar = document.createElement('div');
+  bar.className = 'add-turn-bar';
+  bar.innerHTML = `
+    <button data-insert="${insertAt}" data-role="user"      style="font-size:0.72rem;padding:3px 10px">＋ user</button>
+    <button data-insert="${insertAt}" data-role="assistant" style="font-size:0.72rem;padding:3px 10px">＋ assistant</button>`;
+  bar.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const at   = parseInt(btn.dataset.insert);
+      const role = btn.dataset.role;
+      workingCopy.splice(at, 0, { role, content: '' });
+      setModified(true);
+      renderEditor();
+      // Focus the newly added textarea
+      const cards = document.querySelectorAll('.msg-card');
+      if (cards[at]) cards[at].querySelector('textarea').focus();
+    });
+  });
+  return bar;
+}
+
+function getContentStr(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) return content.map(p => p.text || '').join('');
+  return '';
+}
+
+function escHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Navigation ─────────────────────────────────────────────────────────────
+function guardUnsaved(action) {
+  if (modified) {
+    if (!confirm('You have unsaved changes. Discard and continue?')) return;
+    setModified(false);
+  }
+  action();
+}
+
+document.getElementById('btn-prev').addEventListener('click', () => {
+  guardUnsaved(() => {
+    if (searchResults.length) {
+      const pos = searchResults.indexOf(currentIdx);
+      const prev = pos <= 0 ? searchResults[searchResults.length-1] : searchResults[pos-1];
+      loadConversation(prev);
+    } else {
+      loadConversation(Math.max(0, currentIdx - 1));
+    }
+  });
+});
+
+document.getElementById('btn-next').addEventListener('click', () => {
+  guardUnsaved(() => {
+    if (searchResults.length) {
+      const pos = searchResults.indexOf(currentIdx);
+      const next = pos === searchResults.length - 1 ? searchResults[0] : searchResults[pos+1];
+      loadConversation(next);
+    } else {
+      loadConversation(Math.min(conversations.length - 1, currentIdx + 1));
+    }
+  });
+});
+
+document.getElementById('jump-input').addEventListener('change', (e) => {
+  const n = parseInt(e.target.value) - 1;
+  if (isNaN(n) || n < 0 || n >= conversations.length) {
+    e.target.value = currentIdx + 1;
+    return;
+  }
+  guardUnsaved(() => loadConversation(n));
+});
+
+document.addEventListener('keydown', (e) => {
+  // Arrow keys for navigation (when not in textarea/input)
+  if (document.activeElement.tagName === 'TEXTAREA' ||
+      document.activeElement.tagName === 'INPUT') return;
+  if (e.key === 'ArrowLeft')  document.getElementById('btn-prev').click();
+  if (e.key === 'ArrowRight') document.getElementById('btn-next').click();
+});
+
+// ── Search ─────────────────────────────────────────────────────────────────
+document.getElementById('search-input').addEventListener('input', (e) => {
+  searchQuery = e.target.value.trim().toLowerCase();
+  if (!searchQuery) {
+    searchResults = [];
+    document.getElementById('search-info').textContent = '';
+    return;
+  }
+  searchResults = conversations.reduce((acc, conv, i) => {
+    const text = conv.map(m => getContentStr(m.content)).join(' ').toLowerCase();
+    if (text.includes(searchQuery)) acc.push(i);
+    return acc;
+  }, []);
+  document.getElementById('search-info').textContent =
+    searchResults.length ? `${searchResults.length} matches` : 'No matches';
+  if (searchResults.length) {
+    // Jump to first match >= currentIdx, or first overall
+    const next = searchResults.find(i => i >= currentIdx) ?? searchResults[0];
+    guardUnsaved(() => loadConversation(next));
+  }
+});
+
+// ── Add / delete conversation ──────────────────────────────────────────────
+document.getElementById('btn-add-conv').addEventListener('click', () => {
+  guardUnsaved(() => {
+    conversations.push([
+      { role: 'user',      content: '' },
+      { role: 'assistant', content: '' },
+    ]);
+    updateTotal();
+    loadConversation(conversations.length - 1);
+    toast('New conversation added');
+  });
+});
+
+document.getElementById('btn-delete').addEventListener('click', () => {
+  if (!conversations.length) return;
+  if (!confirm(`Delete conversation ${currentIdx + 1}?`)) return;
+  conversations.splice(currentIdx, 1);
+  updateTotal();
+  if (!conversations.length) {
+    showUI(false);
+    return;
+  }
+  loadConversation(Math.min(currentIdx, conversations.length - 1));
+  toast('Conversation deleted');
+});
+
+// ── Save / discard ──────────────────────────────────────────────────────────
+document.getElementById('btn-save').addEventListener('click', () => {
+  conversations[currentIdx] = deepCopy(workingCopy);
+  setModified(false);
+  toast('Conversation saved');
+});
+
+document.getElementById('btn-discard').addEventListener('click', () => {
+  if (!modified) return;
+  if (!confirm('Discard changes to this conversation?')) return;
+  loadConversation(currentIdx);
+});
+
+// ── Add turns from bottom bar ───────────────────────────────────────────────
+document.getElementById('btn-add-user').addEventListener('click', () => {
+  workingCopy.push({ role: 'user', content: '' });
+  setModified(true);
+  renderEditor();
+  const cards = document.querySelectorAll('.msg-card');
+  cards[cards.length-1]?.querySelector('textarea').focus();
+});
+
+document.getElementById('btn-add-asst').addEventListener('click', () => {
+  workingCopy.push({ role: 'assistant', content: '' });
+  setModified(true);
+  renderEditor();
+  const cards = document.querySelectorAll('.msg-card');
+  cards[cards.length-1]?.querySelector('textarea').focus();
+});
+
+// ── Export ─────────────────────────────────────────────────────────────────
+document.getElementById('btn-export').addEventListener('click', () => {
+  // Warn if current conv has unsaved edits
+  if (modified) {
+    if (!confirm('Current conversation has unsaved changes. Export anyway (without saving them)?')) return;
+  }
+  const lines = conversations.map(conv => JSON.stringify(conv));
+  const blob  = new Blob([lines.join('\n') + '\n'], { type: 'application/x-ndjson' });
+  const url   = URL.createObjectURL(blob);
+  const a     = document.createElement('a');
+  a.href      = url;
+  a.download  = 'identity_conversations.jsonl';
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('Exported identity_conversations.jsonl');
+});
+</script>
+</body>
+</html>
