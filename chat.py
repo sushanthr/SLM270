@@ -299,7 +299,7 @@ def main():
 
     ckpt_path = args.checkpoint or latest_checkpoint(args.checkpoint_dir)
     model     = load_model(ckpt_path, device)
-    tokenizer = SLM270Tokenizer(tokenizer_dir=".")
+    tokenizer = SLM270Tokenizer(tokenizer_dir="tokenizer")
     raw_tok   = tokenizer._tok
 
     # Stop tokens

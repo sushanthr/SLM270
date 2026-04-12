@@ -453,7 +453,7 @@ def apply_chat_template(user_text, system_text=None):
         return f"<|system|>{system_text}<|end|><|user|>{user_text}<|end|><|assistant|>"
     return f"<|user|>{user_text}<|end|><|assistant|>"
 
-tokenizer = SLM270Tokenizer(tokenizer_dir=".")
+tokenizer = SLM270Tokenizer(tokenizer_dir="tokenizer")
 torch.manual_seed(42)
 model = Gemma3Model(GEMMA3_CONFIG_270M).to("cuda")
 

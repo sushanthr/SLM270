@@ -240,7 +240,7 @@ def train() -> None:
     )
 
     # ── Tokeniser ─────────────────────────────────────────────────────────────
-    tokenizer = SLM270Tokenizer(tokenizer_dir=".")
+    tokenizer = SLM270Tokenizer(tokenizer_dir="tokenizer")
 
     # token_bytes: maps each token id → UTF-8 byte length (0 for special tokens)
     # Used in val/bpb computation. Built once here so validation is fast.

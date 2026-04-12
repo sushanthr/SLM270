@@ -467,7 +467,7 @@ def train():
     )
 
     # ── Tokeniser ──────────────────────────────────────────────────────────
-    tokenizer = SLM270Tokenizer(tokenizer_dir=".")
+    tokenizer = SLM270Tokenizer(tokenizer_dir="tokenizer")
     raw_tok   = tokenizer._tok     # PreTrainedTokenizerFast
 
     # ── Load pretrained checkpoint ──────────────────────────────────────────

@@ -163,7 +163,7 @@ def main():
     out_head_weight = model.out_head.weight   # plain model, no _orig_mod layer
 
     # Build validation batches once
-    tokenizer = SLM270Tokenizer(tokenizer_dir=".")
+    tokenizer = SLM270Tokenizer(tokenizer_dir="tokenizer")
     print(f"Building validation set ({args.val_samples} {args.dataset} samples)…")
     if args.dataset == "openwebtext":
         val_batches = build_openwebtext_validation_batches(
