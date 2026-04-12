@@ -1,23 +1,20 @@
 {
-  "boi_token": "<start_of_image>",
   "bos_token": {
-    "content": "<bos>",
+    "content": "<s>",
     "lstrip": false,
     "normalized": false,
     "rstrip": false,
     "single_word": false
   },
-  "eoi_token": "<end_of_image>",
   "eos_token": {
-    "content": "<eos>",
+    "content": "<|endoftext|>",
     "lstrip": false,
     "normalized": false,
     "rstrip": false,
     "single_word": false
   },
-  "image_token": "<image_soft_token>",
   "pad_token": {
-    "content": "<pad>",
+    "content": "<|endoftext|>",
     "lstrip": false,
     "normalized": false,
     "rstrip": false,
