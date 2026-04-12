@@ -21,6 +21,7 @@ from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinea
 
 from SLM270 import Gemma3Model, GEMMA3_CONFIG_270M, SLM270Tokenizer
 from dataset import build_dataloader, build_climbmix_validation_batches, PrefetchLoader
+from optim import Muon
 
 
 # ── Training hyper-parameters ─────────────────────────────────────────────────
@@ -40,12 +41,12 @@ class TrainConfig:
     grad_accum: int     = 1                 # effective batch = 64 × 1 × 1024 = 65 536 tok
 
     # Optimiser
-    max_lr: float       = 1e-4
-    min_lr: float       = 3e-5
-    warmup_steps: int   = 500               # optimiser steps (not micro-steps)
-    weight_decay: float = 0.1
+    matrix_lr: float    = 0.02              # Muon: 2-D weight matrices in transformer blocks
+    other_lr: float     = 3e-4             # AdamW: embedding, norms, and other 1-D params
+    min_lr_frac: float  = 0.05             # cosine decay floor as fraction of peak LR
+    warmup_steps: int   = 500              # optimiser steps (not micro-steps)
+    weight_decay: float = 0.1              # Muon weight decay for matrix params
     grad_clip: float    = 1.0
-    betas: tuple        = (0.9, 0.95)
 
     # Checkpointing
     checkpoint_dir: str  = "checkpoints"
@@ -77,18 +78,18 @@ TOTAL_OPT_STEPS     = CFG.total_tokens // TOKENS_PER_OPT_STEP         # ≈ 190 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def cosine_lr(opt_step: int) -> float:
-    """Linear warmup → flat at max_lr until lr_flat_until_tokens → cosine decay to min_lr."""
+def get_lr_multiplier(opt_step: int) -> float:
+    """Linear warmup → flat → cosine decay. Returns a multiplier in [min_lr_frac, 1.0]."""
     decay_start_step = CFG.lr_flat_until_tokens // TOKENS_PER_OPT_STEP
     if opt_step < CFG.warmup_steps:
-        return CFG.max_lr * opt_step / max(1, CFG.warmup_steps)
+        return CFG.min_lr_frac + (1.0 - CFG.min_lr_frac) * opt_step / max(1, CFG.warmup_steps)
     if opt_step < decay_start_step:
-        return CFG.max_lr
+        return 1.0
     if opt_step >= TOTAL_OPT_STEPS:
-        return CFG.min_lr
+        return CFG.min_lr_frac
     progress = (opt_step - decay_start_step) / max(1, TOTAL_OPT_STEPS - decay_start_step)
     coeff    = 0.5 * (1.0 + math.cos(math.pi * progress))
-    return CFG.min_lr + coeff * (CFG.max_lr - CFG.min_lr)
+    return CFG.min_lr_frac + coeff * (1.0 - CFG.min_lr_frac)
 
 
 def format_tokens(n: int) -> str:
@@ -100,12 +101,14 @@ def format_tokens(n: int) -> str:
     return f"{n / 1e6:.2f}M"
 
 
-def set_lr(optimizer, lr: float) -> None:
-    for pg in optimizer.param_groups:
-        pg["lr"] = lr
+def set_lr(optimizers: list, multiplier: float) -> None:
+    """Scale each optimizer's param groups by multiplier relative to their initial_lr."""
+    for opt in optimizers:
+        for pg in opt.param_groups:
+            pg["lr"] = pg["initial_lr"] * multiplier
 
 
-def save_checkpoint(model, optimizer, opt_step: int, tokens_seen: int) -> str:
+def save_checkpoint(model, muon, adamw, opt_step: int, tokens_seen: int) -> str:
     os.makedirs(CFG.checkpoint_dir, exist_ok=True)
     path = os.path.join(
         CFG.checkpoint_dir,
@@ -113,11 +116,12 @@ def save_checkpoint(model, optimizer, opt_step: int, tokens_seen: int) -> str:
     )
     torch.save(
         {
-            "opt_step":          opt_step,
-            "tokens_seen":       tokens_seen,
-            "model_state_dict":  model.state_dict(),
-            "optim_state_dict":  optimizer.state_dict(),
-            "train_config":      CFG,
+            "opt_step":           opt_step,
+            "tokens_seen":        tokens_seen,
+            "model_state_dict":   model.state_dict(),
+            "muon_state_dict":    muon.state_dict(),
+            "adamw_state_dict":   adamw.state_dict(),
+            "train_config":       CFG,
         },
         path,
     )
@@ -210,15 +214,15 @@ def train() -> None:
     model_cfg = {**GEMMA3_CONFIG_270M, "context_length": CFG.seq_len}
     model = Gemma3Model(model_cfg).to(device)
 
-    total_params  = sum(p.numel() for p in model.parameters())
-    unique_params = total_params - model.tok_emb.weight.numel()   # weight-tied head
+    # model.parameters() deduplicates tied weights, so total_params is already unique.
+    total_params = sum(p.numel() for p in model.parameters())
 
     model.gradient_checkpointing = True
 
     # torch.compile fuses RMSNorm, GeGLU, RoPE and attention kernels.
     model = torch.compile(model, mode="default", fullgraph=True)
 
-    print(f"Parameters  : {total_params:,}  (unique: {unique_params:,})")
+    print(f"Parameters  : {total_params:,}  (weight-tied tok_emb/out_head)")
     print(f"Seq len     : {CFG.seq_len}")
     print(f"Batch (eff) : {CFG.batch_size} × {CFG.grad_accum} × {CFG.seq_len} = {TOKENS_PER_OPT_STEP:,} tok/step")
     print(f"Target      : {format_tokens(CFG.total_tokens)}  |  {TOTAL_OPT_STEPS:,} opt-steps")
@@ -231,13 +235,25 @@ def train() -> None:
     out_head_weight = model._orig_mod.out_head.weight
 
     # ── Optimiser ─────────────────────────────────────────────────────────────
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=CFG.max_lr,
-        betas=CFG.betas,
-        weight_decay=CFG.weight_decay,
-        fused=True,
-    )
+    # Muon for all 2-D weight matrices inside transformer blocks.
+    # AdamW for the tied embedding weight, norm scales, and any other 1-D params.
+    # out_head.weight is tied to tok_emb.weight so it won't appear separately.
+    matrix_params = [p for block in model._orig_mod.blocks
+                     for p in block.parameters() if p.ndim == 2]
+    other_params  = [p for p in model.parameters()
+                     if not any(p is mp for mp in matrix_params)]
+
+    muon  = Muon(matrix_params, lr=CFG.matrix_lr, momentum=0.95,
+                 ns_steps=5, weight_decay=CFG.weight_decay)
+    adamw = torch.optim.AdamW(other_params, lr=CFG.other_lr,
+                               betas=(0.9, 0.95), weight_decay=0.01, fused=True)
+
+    # Store initial LRs so set_lr() can scale them with the schedule multiplier
+    for opt, base_lr in [(muon, CFG.matrix_lr), (adamw, CFG.other_lr)]:
+        for pg in opt.param_groups:
+            pg["initial_lr"] = base_lr
+
+    optimizers = [muon, adamw]
 
     # ── Tokeniser ─────────────────────────────────────────────────────────────
     tokenizer = SLM270Tokenizer(tokenizer_dir="tokenizer")
@@ -269,12 +285,12 @@ def train() -> None:
             "grad_accum":       CFG.grad_accum,
             "eff_batch_tokens": TOKENS_PER_OPT_STEP,
             "total_opt_steps":  TOTAL_OPT_STEPS,
-            "max_lr":           CFG.max_lr,
-            "min_lr":           CFG.min_lr,
+            "matrix_lr":        CFG.matrix_lr,
+            "other_lr":         CFG.other_lr,
+            "min_lr_frac":      CFG.min_lr_frac,
             "warmup_steps":     CFG.warmup_steps,
             "weight_decay":     CFG.weight_decay,
             "params_total":     total_params,
-            "params_unique":    unique_params,
             "val_interval_tokens_B": CFG.val_interval_tokens / 1e9,
             "val_samples":      CFG.val_samples,
         },
@@ -287,7 +303,8 @@ def train() -> None:
 
     # ── State ──────────────────────────────────────────────────────────────────
     model.train()
-    optimizer.zero_grad(set_to_none=True)
+    muon.zero_grad(set_to_none=True)
+    adamw.zero_grad(set_to_none=True)
 
     tokens_seen = 0
     opt_step    = 0
@@ -300,7 +317,12 @@ def train() -> None:
         ckpt = torch.load(RESUME_CHECKPOINT, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
         if not RESUME_WEIGHTS_ONLY:
-            optimizer.load_state_dict(ckpt["optim_state_dict"])
+            if "muon_state_dict" in ckpt:
+                muon.load_state_dict(ckpt["muon_state_dict"])
+                adamw.load_state_dict(ckpt["adamw_state_dict"])
+            elif "optim_state_dict" in ckpt:
+                # legacy checkpoint with single AdamW — skip Muon state
+                adamw.load_state_dict(ckpt["optim_state_dict"])
         tokens_seen = ckpt["tokens_seen"]
         opt_step    = ckpt["opt_step"]
         del ckpt
@@ -427,10 +449,12 @@ def train() -> None:
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), CFG.grad_clip
             )
-            lr = cosine_lr(opt_step)
-            set_lr(optimizer, lr)
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
+            multiplier = get_lr_multiplier(opt_step)
+            set_lr(optimizers, multiplier)
+            muon.step()
+            adamw.step()
+            muon.zero_grad(set_to_none=True)
+            adamw.zero_grad(set_to_none=True)
 
             # ── Throughput ────────────────────────────────────────────────────
             now        = time.perf_counter()
@@ -450,7 +474,8 @@ def train() -> None:
                     {
                         "train/loss":         displayed_loss,
                         "train/perplexity":   math.exp(min(displayed_loss, 20)),
-                        "train/lr":           lr,
+                        "train/lr_matrix":    multiplier * CFG.matrix_lr,
+                        "train/lr_other":     multiplier * CFG.other_lr,
                         "train/grad_norm":    grad_norm.item(),
                         "tokens/seen":        tokens_seen,
                         "tokens/seen_M":      tokens_seen / 1e6,
@@ -480,7 +505,7 @@ def train() -> None:
 
             # ── Checkpoint (every 1B tokens, keep last 2) ─────────────────
             if tokens_seen >= next_ckpt_tokens:
-                path = save_checkpoint(model, optimizer, opt_step, tokens_seen)
+                path = save_checkpoint(model, muon, adamw, opt_step, tokens_seen)
                 print(f"\n  ✓ Checkpoint {path}  ({format_tokens(tokens_seen)})\n")
                 rotate_checkpoints()
                 wandb.log(

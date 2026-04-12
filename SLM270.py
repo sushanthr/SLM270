@@ -257,6 +257,9 @@ class Gemma3Model(nn.Module):
 
         self.final_norm = RMSNorm(cfg["emb_dim"], eps=1e-6)
         self.out_head = nn.Linear(cfg["emb_dim"], cfg["vocab_size"], bias=False, dtype=cfg["dtype"])
+        # Weight tying: share the embedding matrix with the output projection.
+        # Halves embedding parameter count and improves training stability.
+        self.out_head.weight = self.tok_emb.weight
         self.cfg = cfg
         self.gradient_checkpointing = False
 
@@ -292,18 +295,14 @@ class Gemma3Model(nn.Module):
         n_layers = self.cfg["n_layers"]
         residual_scale = 1.0 / (2 * n_layers) ** 0.5   # GPT-2 / LLaMA convention
 
-        # Embedding: small std keeps initial logits near ln(vocab_size)
-        nn.init.normal_(self.tok_emb.weight, mean=0.0, std=0.02)
-
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-        # Output head: small but non-zero — zeros_ causes FP4 abs_max=0 → div/0 NaN.
-        # std=1e-4 keeps initial logits tiny (≈uniform over vocab) while staying
-        # representable in NVFP4.  Must come AFTER the general loop above so it
-        # isn't overwritten.
-        nn.init.normal_(self.out_head.weight, mean=0.0, std=1e-4)
+        # Embedding (and tied out_head): init after the Linear loop so it isn't
+        # overwritten by the loop above (out_head is a Linear and shares this weight).
+        # std=0.02 keeps initial logits near ln(vocab_size) at startup.
+        nn.init.normal_(self.tok_emb.weight, mean=0.0, std=0.02)
 
         # Scale projections that write *into* the residual stream by
         # 1/sqrt(2*L) so residual-stream variance stays O(1) at init
@@ -399,7 +398,7 @@ class Gemma3Model(nn.Module):
         return x  # hidden states — caller handles the linear + loss
 
 GEMMA3_CONFIG_270M = {
-    "vocab_size": 262_144,
+    "vocab_size": 32_064,
     "context_length": 32_768,
     "emb_dim": 640,
     "n_heads": 4,
