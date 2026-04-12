@@ -24,18 +24,19 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
+def has_ve(layer_idx: int, n_layer: int) -> bool:
+    """True for layers that receive Value Embeddings (alternating, last layer always included)."""
+    return layer_idx % 2 == (n_layer - 1) % 2
+
+
 class FeedForward(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.fc1 = nn.Linear(cfg["emb_dim"], cfg["hidden_dim"], dtype=cfg["dtype"], bias=False)
-        self.fc2 = nn.Linear(cfg["emb_dim"], cfg["hidden_dim"], dtype=cfg["dtype"], bias=False)
-        self.fc3 = nn.Linear(cfg["hidden_dim"], cfg["emb_dim"], dtype=cfg["dtype"], bias=False)
+        self.fc2 = nn.Linear(cfg["hidden_dim"], cfg["emb_dim"], dtype=cfg["dtype"], bias=False)
 
     def forward(self, x):
-        x_fc1 = self.fc1(x)
-        x_fc2 = self.fc2(x)
-        x = nn.functional.gelu(x_fc1, approximate="tanh") * x_fc2
-        return self.fc3(x)
+        return self.fc2(F.relu(self.fc1(x)).square())
 
 class RMSNorm(nn.Module):
     def __init__(self, emb_dim, eps=1e-6, bias=False):
@@ -103,7 +104,7 @@ def apply_rope(x, cos, sin):
 class GroupedQueryAttention(nn.Module):
     def __init__(
         self, d_in, num_heads, num_kv_groups, head_dim=None, qk_norm=False,
-        query_pre_attn_scalar=None, dtype=None,
+        query_pre_attn_scalar=None, dtype=None, has_ve=False,
     ):
         super().__init__()
         assert num_heads % num_kv_groups == 0, "num_heads must be divisible by num_kv_groups"
@@ -136,19 +137,28 @@ class GroupedQueryAttention(nn.Module):
         else:
             self.scaling = (head_dim) ** -0.5
 
+        # Value embedding gate: tiny Linear(12, n_kv_groups) — only on VE layers
+        self.ve_gate = nn.Linear(12, num_kv_groups, bias=False, dtype=dtype) if has_ve else None
 
-    def forward(self, x, mask, cos, sin):
+
+    def forward(self, x, mask, cos, sin, ve=None):
         b, num_tokens, _ = x.shape
 
         # Apply projections
         queries = self.W_query(x)  # (b, num_tokens, num_heads * head_dim)
         keys = self.W_key(x)       # (b, num_tokens, num_kv_groups * head_dim)
-        values = self.W_value(x)   # (b, num_tokens, num_kv_groups * head_dim)
+        values = self.W_value(x).view(b, num_tokens, self.num_kv_groups, self.head_dim)
 
-        # Reshape
+        # Value embedding injection (ResFormer): mix token-identity signal into values
+        if ve is not None:
+            # gate shape: (b, T, num_kv_groups, 1), range (0, 3) — input-dependent blend
+            gate = 3.0 * torch.sigmoid(self.ve_gate(x[..., :12])).unsqueeze(-1)
+            values = values + gate * ve.view(b, num_tokens, self.num_kv_groups, self.head_dim)
+
+        # Reshape for attention
         queries = queries.view(b, num_tokens, self.num_heads, self.head_dim).transpose(1, 2)
         keys = keys.view(b, num_tokens, self.num_kv_groups, self.head_dim).transpose(1, 2)
-        values = values.view(b, num_tokens, self.num_kv_groups, self.head_dim).transpose(1, 2)
+        values = values.transpose(1, 2)
 
         # Optional normalization
         if self.q_norm:
@@ -190,9 +200,9 @@ class GroupedQueryAttention(nn.Module):
 
 class TransformerBlock(nn.Module):
 
-    def __init__(self, cfg, attn_type):
+    def __init__(self, cfg, attn_type, layer_idx):
         super().__init__()
-        self.attn_type = attn_type 
+        self.attn_type = attn_type
 
         self.att = GroupedQueryAttention(
             d_in=cfg["emb_dim"],
@@ -202,6 +212,7 @@ class TransformerBlock(nn.Module):
             qk_norm=cfg["qk_norm"],
             query_pre_attn_scalar=cfg["query_pre_attn_scalar"],
             dtype=cfg["dtype"],
+            has_ve=has_ve(layer_idx, cfg["n_layers"]),
         )
         self.ff = FeedForward(cfg)
         self.input_layernorm = RMSNorm(cfg["emb_dim"], eps=1e-6)
@@ -212,6 +223,7 @@ class TransformerBlock(nn.Module):
     def forward(
         self,
         x,
+        ve,
         float_mask_local,
         cos_global,
         sin_global,
@@ -230,8 +242,8 @@ class TransformerBlock(nn.Module):
             attn_mask = None               # None → is_causal=True → FlashAttention kernel
             cos = cos_global
             sin = sin_global
-        
-        x_attn = self.att(x, attn_mask, cos, sin)
+
+        x_attn = self.att(x, attn_mask, cos, sin, ve=ve)
         x_attn = self.post_attention_layernorm(x_attn)
         x = shortcut + x_attn
 
@@ -252,8 +264,17 @@ class Gemma3Model(nn.Module):
         self.tok_emb = nn.Embedding(cfg["vocab_size"], cfg["emb_dim"], dtype=cfg["dtype"])
 
         self.blocks = nn.ModuleList([
-            TransformerBlock(cfg, attn_type)for attn_type in cfg["layer_types"]
+            TransformerBlock(cfg, attn_type, layer_idx=i)
+            for i, attn_type in enumerate(cfg["layer_types"])
         ])
+        # Value embeddings (ResFormer): alternating layers get a direct token-identity
+        # signal injected into attention values via a learned gate.
+        kv_dim = cfg["n_kv_groups"] * cfg["head_dim"]
+        self.value_embeds = nn.ModuleDict({
+            str(i): nn.Embedding(cfg["vocab_size"], kv_dim, dtype=cfg["dtype"])
+            for i in range(cfg["n_layers"])
+            if has_ve(i, cfg["n_layers"])
+        })
 
         self.final_norm = RMSNorm(cfg["emb_dim"], eps=1e-6)
         self.out_head = nn.Linear(cfg["emb_dim"], cfg["vocab_size"], bias=False, dtype=cfg["dtype"])
@@ -304,12 +325,21 @@ class Gemma3Model(nn.Module):
         # std=0.02 keeps initial logits near ln(vocab_size) at startup.
         nn.init.normal_(self.tok_emb.weight, mean=0.0, std=0.02)
 
+        # Value embeddings: same scale as tok_emb
+        for ve_emb in self.value_embeds.values():
+            nn.init.normal_(ve_emb.weight, mean=0.0, std=0.02)
+
         # Scale projections that write *into* the residual stream by
         # 1/sqrt(2*L) so residual-stream variance stays O(1) at init
         # regardless of depth.
         for block in self.blocks:
             block.att.out_proj.weight.data.mul_(residual_scale)
-            block.ff.fc3.weight.data.mul_(residual_scale)
+            block.ff.fc2.weight.data.mul_(residual_scale)
+
+        # VE gates: small positive uniform so gates open slightly from the start
+        for block in self.blocks:
+            if block.att.ve_gate is not None:
+                nn.init.uniform_(block.att.ve_gate.weight, 0.0, 0.02)
 
     @staticmethod
     def _build_float_mask_local(seq_len: int, sliding_window: int, dtype) -> torch.Tensor:
@@ -370,11 +400,15 @@ class Gemma3Model(nn.Module):
     def forward(self, input_ids, return_logits: bool = True):
         x = self.tok_emb(input_ids) * (self.cfg["emb_dim"] ** 0.5)
 
-        for block in self.blocks:
+        for i, block in enumerate(self.blocks):
+            ve_key = str(i)
+            ve = self.value_embeds[ve_key](input_ids).to(x.dtype) \
+                 if ve_key in self.value_embeds else None
             if self.gradient_checkpointing and self.training:
                 x = checkpoint(
                     block,
                     x,
+                    ve,
                     self.float_mask_local,
                     self.cos_global,
                     self.sin_global,
@@ -385,6 +419,7 @@ class Gemma3Model(nn.Module):
             else:
                 x = block(
                     x,
+                    ve,
                     float_mask_local=self.float_mask_local,
                     cos_global=self.cos_global,
                     sin_global=self.sin_global,
@@ -403,7 +438,7 @@ GEMMA3_CONFIG_310M = {
     "emb_dim": 1024,
     "n_heads": 8,
     "n_layers": 31,
-    "hidden_dim": 2048,
+    "hidden_dim": 4096,
     "head_dim": 128,
     "qk_norm": True,
     "n_kv_groups": 2,
