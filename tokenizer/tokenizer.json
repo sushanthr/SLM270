@@ -128,6 +128,60 @@
       "rstrip": true,
       "normalized": false,
       "special": true
+    },
+    {
+      "id": 32011,
+      "content": "<|tool|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": true,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 32012,
+      "content": "<|/tool|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": true,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 32013,
+      "content": "<|tool_call|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": true,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 32014,
+      "content": "<|/tool_call|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": true,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 32015,
+      "content": "<|tool_response|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": true,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 32016,
+      "content": "<|/tool_response|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": true,
+      "normalized": false,
+      "special": true
     }
   ],
   "normalizer": {

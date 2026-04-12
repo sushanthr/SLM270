@@ -9,5 +9,11 @@
   "<|end|>": 32007,
   "<|placeholder5|>": 32008,
   "<|placeholder6|>": 32009,
-  "<|user|>": 32010
+  "<|user|>": 32010,
+  "<|tool|>": 32011,
+  "<|/tool|>": 32012,
+  "<|tool_call|>": 32013,
+  "<|/tool_call|>": 32014,
+  "<|tool_response|>": 32015,
+  "<|/tool_response|>": 32016
 }

@@ -113,6 +113,54 @@
       "rstrip": true,
       "single_word": false,
       "special": true
+    },
+    "32011": {
+      "content": "<|tool|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": true,
+      "single_word": false,
+      "special": true
+    },
+    "32012": {
+      "content": "<|/tool|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": true,
+      "single_word": false,
+      "special": true
+    },
+    "32013": {
+      "content": "<|tool_call|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": true,
+      "single_word": false,
+      "special": true
+    },
+    "32014": {
+      "content": "<|/tool_call|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": true,
+      "single_word": false,
+      "special": true
+    },
+    "32015": {
+      "content": "<|tool_response|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": true,
+      "single_word": false,
+      "special": true
+    },
+    "32016": {
+      "content": "<|/tool_response|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": true,
+      "single_word": false,
+      "special": true
     }
   },
   "bos_token": "<s>",
