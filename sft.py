@@ -19,7 +19,7 @@ import wandb
 from tqdm import tqdm
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 
-from SLM270 import Gemma3Model, GEMMA3_CONFIG_270M, SLM270Tokenizer
+from SLM270 import Gemma3Model, GEMMA3_CONFIG_310M, SLM270Tokenizer
 
 # nanochat task classes live one directory up
 _NANOCHAT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "nanochat")
@@ -445,7 +445,7 @@ def train():
     device = torch.device("cuda")
 
     # ── Model ──────────────────────────────────────────────────────────────
-    model_cfg = {**GEMMA3_CONFIG_270M, "context_length": CFG.seq_len}
+    model_cfg = {**GEMMA3_CONFIG_310M, "context_length": CFG.seq_len}
     model = Gemma3Model(model_cfg).to(device)
     model.gradient_checkpointing = True
     model = torch.compile(model, mode="default", fullgraph=True)

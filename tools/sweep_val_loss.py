@@ -45,7 +45,7 @@ class TrainConfig:
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from tqdm import tqdm
 
-from SLM270 import Gemma3Model, GEMMA3_CONFIG_270M, SLM270Tokenizer
+from SLM270 import Gemma3Model, GEMMA3_CONFIG_310M, SLM270Tokenizer
 from dataset import build_validation_batches, build_openwebtext_validation_batches
 
 
@@ -156,7 +156,7 @@ def main():
     print(f"Found {len(ckpt_files)} checkpoints in {args.checkpoint_dir}/\n")
 
     # Build the model once (no torch.compile — not needed for eval)
-    model_cfg = {**GEMMA3_CONFIG_270M, "context_length": args.seq_len}
+    model_cfg = {**GEMMA3_CONFIG_310M, "context_length": args.seq_len}
     model = Gemma3Model(model_cfg).to(device)
 
     fused_ce       = LigerFusedLinearCrossEntropyLoss()

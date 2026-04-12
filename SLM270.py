@@ -397,41 +397,54 @@ class Gemma3Model(nn.Module):
             return self.out_head(x)
         return x  # hidden states — caller handles the linear + loss
 
-GEMMA3_CONFIG_270M = {
+GEMMA3_CONFIG_310M = {
     "vocab_size": 32_064,
     "context_length": 32_768,
-    "emb_dim": 640,
-    "n_heads": 4,
-    "n_layers": 18,
+    "emb_dim": 1024,
+    "n_heads": 8,
+    "n_layers": 31,
     "hidden_dim": 2048,
-    "head_dim": 256,
+    "head_dim": 128,
     "qk_norm": True,
-    "n_kv_groups": 1,
+    "n_kv_groups": 2,
     "rope_local_base": 10_000.0,
     "rope_base": 1_000_000.0,
     "sliding_window": 512,
-      "layer_types": [
-        "sliding_attention",
-        "sliding_attention",
-        "sliding_attention",
-        "sliding_attention",
-        "sliding_attention",
-        "full_attention",
-        "sliding_attention",
-        "sliding_attention",
-        "sliding_attention",
-        "sliding_attention",
-        "sliding_attention",
-        "full_attention",
-        "sliding_attention",
-        "sliding_attention",
-        "sliding_attention",
-        "sliding_attention",
-        "sliding_attention",
-        "full_attention"
+    "layer_types": [
+        "sliding_attention",  # 0
+        "sliding_attention",  # 1
+        "sliding_attention",  # 2
+        "sliding_attention",  # 3
+        "sliding_attention",  # 4
+        "full_attention",     # 5
+        "sliding_attention",  # 6
+        "sliding_attention",  # 7
+        "sliding_attention",  # 8
+        "sliding_attention",  # 9
+        "sliding_attention",  # 10
+        "full_attention",     # 11
+        "sliding_attention",  # 12
+        "sliding_attention",  # 13
+        "sliding_attention",  # 14
+        "sliding_attention",  # 15
+        "sliding_attention",  # 16
+        "full_attention",     # 17
+        "sliding_attention",  # 18
+        "sliding_attention",  # 19
+        "sliding_attention",  # 20
+        "sliding_attention",  # 21
+        "sliding_attention",  # 22
+        "full_attention",     # 23
+        "sliding_attention",  # 24
+        "sliding_attention",  # 25
+        "sliding_attention",  # 26
+        "sliding_attention",  # 27
+        "sliding_attention",  # 28
+        "full_attention",     # 29
+        "sliding_attention",  # 30
     ],
     "dtype": torch.bfloat16,
-    "query_pre_attn_scalar": 256,
+    "query_pre_attn_scalar": 128,
 }
 
 class SLM270Tokenizer:
@@ -452,19 +465,8 @@ def apply_chat_template(user_text, system_text=None):
         return f"<|system|>{system_text}<|end|><|user|>{user_text}<|end|><|assistant|>"
     return f"<|user|>{user_text}<|end|><|assistant|>"
 
-tokenizer = SLM270Tokenizer(tokenizer_dir="tokenizer")
-torch.manual_seed(42)
-model = Gemma3Model(GEMMA3_CONFIG_270M).to("cuda")
-
-# prompt = "Give me a 123 short introduction to large language models."
-# prompt = apply_chat_template(prompt)
-# input_token_ids = tokenizer.encode(prompt)
-# for token in input_token_ids:
-#     print(str(token) + " " + tokenizer.decode([token]))
-# result = model(torch.zeros(1, 128, dtype=torch.long).to("cuda"))
-# print(result)
-total_params = sum(p.numel() for p in model.parameters())
-print(f"Total number of parameters: {total_params:,}")
-# Account for weight tying
-total_params_normalized = total_params - model.tok_emb.weight.numel()
-print(f"Total number of unique parameters: {total_params_normalized:,}")
+if __name__ == "__main__":
+    torch.manual_seed(42)
+    model = Gemma3Model(GEMMA3_CONFIG_310M).to("cuda")
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Total parameters (weight-tied): {total_params:,}")

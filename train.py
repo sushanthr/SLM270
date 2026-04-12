@@ -19,7 +19,7 @@ import wandb
 from tqdm import tqdm
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 
-from SLM270 import Gemma3Model, GEMMA3_CONFIG_270M, SLM270Tokenizer
+from SLM270 import Gemma3Model, GEMMA3_CONFIG_310M, SLM270Tokenizer
 from dataset import build_dataloader, build_climbmix_validation_batches, PrefetchLoader
 from optim import Muon
 
@@ -34,11 +34,11 @@ class TrainConfig:
     # Matching that here so runs are directly comparable.
     total_tokens: int          = 5_220_000_000     # 5.22 B  (matches nanochat's compute-optimal ratio=12)
     lr_flat_until_tokens: int  = 1_500_000_000     # hold max_lr for first ~29% of training, then cosine decay
-    seq_len: int               = 1024
+    seq_len: int               = 2048
 
     # Batch
     batch_size: int     = 224
-    grad_accum: int     = 1                 # effective batch = 64 × 1 × 1024 = 65 536 tok
+    grad_accum: int     = 1                 # effective batch = 224 × 1 × 2048 = 458 752 tok
 
     # Optimiser
     matrix_lr: float    = 0.02              # Muon: 2-D weight matrices in transformer blocks
@@ -211,7 +211,7 @@ def train() -> None:
     device = torch.device("cuda")
 
     # ── Model ──────────────────────────────────────────────────────────────────
-    model_cfg = {**GEMMA3_CONFIG_270M, "context_length": CFG.seq_len}
+    model_cfg = {**GEMMA3_CONFIG_310M, "context_length": CFG.seq_len}
     model = Gemma3Model(model_cfg).to(device)
 
     # model.parameters() deduplicates tied weights, so total_params is already unique.
@@ -261,7 +261,7 @@ def train() -> None:
     # token_bytes: maps each token id → UTF-8 byte length (0 for special tokens)
     # Used in val/bpb computation. Built once here so validation is fast.
     print("Building token_bytes tensor…")
-    token_bytes_tensor = build_token_bytes(tokenizer, GEMMA3_CONFIG_270M["vocab_size"], device)
+    token_bytes_tensor = build_token_bytes(tokenizer, GEMMA3_CONFIG_310M["vocab_size"], device)
 
     # ── Validation batches (materialised once from last ClimbMix shard) ─────────
     print(f"Building validation set ({CFG.val_samples} ClimbMix samples, last local shard)…")

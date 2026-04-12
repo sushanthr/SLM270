@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn.functional as F
 
-from SLM270 import Gemma3Model, GEMMA3_CONFIG_270M, SLM270Tokenizer
+from SLM270 import Gemma3Model, GEMMA3_CONFIG_310M, SLM270Tokenizer
 from SLM270.tools.math_tools import run_tool_calls
 
 
@@ -124,7 +124,7 @@ def load_model(checkpoint_path: str, device: torch.device):
         for k, v in state_dict.items()
     }
 
-    model_cfg = {**GEMMA3_CONFIG_270M, "context_length": 1024}
+    model_cfg = {**GEMMA3_CONFIG_310M, "context_length": 2048}
     model = Gemma3Model(model_cfg).to(device)
     model.load_state_dict(state_dict)
     model.eval()
