@@ -181,6 +181,64 @@ def build_validation_batches(
     return batches
 
 
+# ── ClimbMix validation dataset (last local shard, matches training distribution) ─────────
+_VAL_FILE = os.path.join(_DATASET_DIR, "val_climbmix.jsonl")
+
+def build_climbmix_validation_batches(
+    tokenizer,
+    seq_len: int = 1024,
+    n_samples: int = 1000,
+    batch_size: int = 8,
+    seed: int = 42,
+) -> List[Dict[str, torch.Tensor]]:
+    """
+    Reads val_climbmix.jsonl — shard_06542 from karpathy/climbmix-400b-shuffle,
+    the same shard nanochat reserves for validation.  Never appears in training data.
+    """
+    assert os.path.exists(_VAL_FILE), (
+        f"Validation file not found: {_VAL_FILE}\n"
+        f"Download it with: python3 -c \"import urllib.request, pyarrow.parquet as pq, json, os; ...\""
+    )
+    val_file = _VAL_FILE
+
+    ds = load_dataset("json", data_files=[val_file], split="train", streaming=True)
+    ds = ds.shuffle(seed=seed, buffer_size=10_000)
+
+    eos_id = tokenizer.eos_token_id
+    needed = seq_len + 1
+    buffer: list[int] = []
+    chunks: list[Dict[str, torch.Tensor]] = []
+
+    for sample in ds.take(n_samples):
+        text: str = sample.get("text") or ""
+        if not text.strip():
+            continue
+        ids: list[int] = tokenizer.encode(text)
+        if not ids:
+            continue
+        if eos_id is not None:
+            ids.append(eos_id)
+        buffer.extend(ids)
+        while len(buffer) >= needed:
+            chunk  = buffer[:needed]
+            buffer = buffer[needed:]
+            chunks.append({
+                "input_ids": torch.tensor(chunk[:-1], dtype=torch.long),
+                "labels":    torch.tensor(chunk[1:],  dtype=torch.long),
+            })
+
+    batches: List[Dict[str, torch.Tensor]] = []
+    for i in range(0, len(chunks), batch_size):
+        group = chunks[i : i + batch_size]
+        if len(group) < batch_size:
+            continue  # drop last partial batch so all batches are uniform size
+        batches.append({
+            "input_ids": torch.stack([g["input_ids"] for g in group]),
+            "labels":    torch.stack([g["labels"]    for g in group]),
+        })
+    return batches
+
+
 # ── OpenWebText validation dataset ───────────────────────────────────────────
 
 def build_openwebtext_validation_batches(

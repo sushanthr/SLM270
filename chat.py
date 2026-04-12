@@ -29,7 +29,7 @@ import torch
 import torch.nn.functional as F
 
 from SLM270 import Gemma3Model, GEMMA3_CONFIG_270M, SLM270Tokenizer
-from math_tools import run_tool_calls
+from SLM270.tools.math_tools import run_tool_calls
 
 
 # ── ANSI colours ──────────────────────────────────────────────────────────────

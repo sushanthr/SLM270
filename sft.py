@@ -11,7 +11,7 @@ SLM270 Supervised Fine-Tuning (SFT) script.
   - WandB metrics; checkpoints saved with "sft_" prefix
 """
 
-import os, sys, math, time, json
+import os, sys, math, time, json, queue, threading
 from dataclasses import dataclass
 
 import torch
@@ -31,8 +31,8 @@ from tasks.customjson import CustomJSON
 from tasks.spellingbee import SimpleSpelling, SpellingBee
 
 # SLM270-specific tool-call task classes
-from gsm8k_toolcall import GSM8KToolCall
-from orca_math import OrcaMathRewritten
+from SLM270.tools.gsm8k_toolcall import GSM8KToolCall
+from SLM270.tools.orca_math import OrcaMathRewritten
 
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -68,8 +68,8 @@ class SFTConfig:
 
     # Sequence / batch
     seq_len:    int   = 1024
-    batch_size: int   = 32       # micro-batch sequences per step
-    grad_accum: int   = 2        # effective ≈ 32 × 2 × 1024 = 65 536 tok/step
+    batch_size: int   = 224      # micro-batch sequences per step
+    grad_accum: int   = 1        # effective ≈ 224 × 1 × 1024 = 229 376 tok/step
 
     # Learning rate schedule (progress goes 0 → 1 over the run)
     max_lr:          float = 3e-5
@@ -322,6 +322,32 @@ def sft_data_generator(raw_tok, dataset, batch_size: int, seq_len: int,
             break
 
 
+# ── Background prefetch wrapper ──────────────────────────────────────────────
+
+def prefetch_generator(gen, maxsize: int = 4):
+    """
+    Wraps a generator so that up to `maxsize` batches are prepared by a
+    background thread while the GPU is busy, hiding CPU tokenisation latency.
+    """
+    q: queue.Queue = queue.Queue(maxsize=maxsize)
+    _DONE = object()
+
+    def _worker():
+        try:
+            for item in gen:
+                q.put(item)
+        finally:
+            q.put(_DONE)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    while True:
+        item = q.get()
+        if item is _DONE:
+            break
+        yield item
+
+
 # ── LR schedule ──────────────────────────────────────────────────────────────
 
 def get_lr(progress: float) -> float:
@@ -559,6 +585,7 @@ def train():
     tokens_seen    = 0
     loss_accum     = 0.0
     progress       = 0.0
+    prev_consumed  = 0
 
     next_val_step  = CFG.val_every_steps
     next_ckpt_step = CFG.ckpt_every_steps
@@ -585,19 +612,25 @@ def train():
         )
 
     # ── Data generator ──────────────────────────────────────────────────────
-    train_gen = sft_data_generator(
-        raw_tok, train_dataset,
-        batch_size=CFG.batch_size,
-        seq_len=CFG.seq_len,
-        buffer_size=CFG.pack_buffer,
+    train_gen = prefetch_generator(
+        sft_data_generator(
+            raw_tok, train_dataset,
+            batch_size=CFG.batch_size,
+            seq_len=CFG.seq_len,
+            buffer_size=CFG.pack_buffer,
+        ),
+        maxsize=4,
     )
 
     def make_val_gen():
-        return sft_data_generator(
-            raw_tok, val_dataset,
-            batch_size=CFG.val_batch_size,
-            seq_len=CFG.seq_len,
-            buffer_size=CFG.pack_buffer,
+        return prefetch_generator(
+            sft_data_generator(
+                raw_tok, val_dataset,
+                batch_size=CFG.val_batch_size,
+                seq_len=CFG.seq_len,
+                buffer_size=CFG.pack_buffer,
+            ),
+            maxsize=2,
         )
 
     # ── Training loop ────────────────────────────────────────────────────────
@@ -649,7 +682,8 @@ def train():
 
             displayed_loss = loss_accum
             loss_accum     = 0.0
-            pbar.update(CFG.batch_size * CFG.grad_accum)
+            pbar.update(consumed - prev_consumed)
+            prev_consumed  = consumed
 
             update_pbar(tok_per_sec, displayed_loss)
 

@@ -20,7 +20,7 @@ from tqdm import tqdm
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 
 from SLM270 import Gemma3Model, GEMMA3_CONFIG_270M, SLM270Tokenizer
-from dataset import build_dataloader, build_validation_batches, PrefetchLoader
+from dataset import build_dataloader, build_climbmix_validation_batches, PrefetchLoader
 
 
 # ── Training hyper-parameters ─────────────────────────────────────────────────
@@ -51,7 +51,8 @@ class TrainConfig:
 
     # Validation
     val_interval_tokens: int = 1_000_000_000    # run validation every 1B tokens
-    val_samples: int         = 1_000            # Wikipedia documents to validate on
+    val_samples: int         = 1_000            # ClimbMix documents to validate on
+    val_batch_size: int      = 8                # small batch for val: 262K vocab × fp32 logits is ~8.6 GB at B=8
 
     # Misc
     seed: int           = 42
@@ -137,39 +138,63 @@ def rotate_checkpoints() -> None:
 
 # ── Validation ────────────────────────────────────────────────────────────────
 
-@torch.no_grad()
-def run_validation(model, val_batches, device, fused_ce, out_head_weight) -> dict:
+def build_token_bytes(tokenizer, vocab_size: int, device) -> torch.Tensor:
     """
-    Evaluates the model on the pre-built Wikipedia validation batches.
-    Returns a dict with val/loss and val/perplexity.
+    Build a (vocab_size,) int32 tensor mapping each token id to its UTF-8 byte length.
+    Special tokens (eos, pad, and anything in all_special_ids) get 0 so they are
+    excluded from the bits-per-byte metric, matching nanochat's evaluate_bpb logic.
+    """
+    tok = tokenizer._tok
+    special_ids = set(tok.all_special_ids) if tok.all_special_ids else set()
+    sizes = []
+    for token_id in range(vocab_size):
+        if token_id in special_ids:
+            sizes.append(0)
+        else:
+            decoded = tok.decode([token_id], skip_special_tokens=False)
+            sizes.append(max(0, len(decoded.encode("utf-8"))))
+    return torch.tensor(sizes, dtype=torch.int32, device=device)
+
+
+@torch.no_grad()
+def run_validation_bpb(model, val_batches, device, token_bytes) -> dict:
+    """
+    Evaluates the model on ClimbMix validation batches and returns val/bpb.
+
+    bits-per-byte = sum(per_token_nats * (bytes > 0)) / (log(2) * sum(bytes))
+
+    This is vocab-size-independent (unlike mean CE loss), so it stays
+    comparable if the tokenizer or vocab size changes.  Special tokens
+    contribute 0 bytes and are excluded from both the numerator and denominator.
     """
     model.eval()
-    total_loss   = 0.0
-    total_tokens = 0
+    total_nats  = 0.0
+    total_bytes = 0
 
     for batch in tqdm(val_batches, desc="  val", leave=False, dynamic_ncols=True):
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels    = batch["labels"].to(device, non_blocking=True)
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            hidden = model(input_ids, return_logits=False)            # (B, T, D)
-            loss   = fused_ce(
-                out_head_weight,
-                hidden.reshape(-1, hidden.shape[-1]),                 # (B*T, D)
-                labels.reshape(-1),                                    # (B*T,)
-            )
+            logits = model(input_ids, return_logits=True)             # (B, T, V)
+        logits = logits.float()                                        # fp32 for stable CE
 
-        n_tokens      = labels.numel()
-        total_loss   += loss.item() * n_tokens   # fused_ce returns mean; convert to sum
-        total_tokens += n_tokens
+        loss_per_tok = F.cross_entropy(
+            logits.view(-1, logits.shape[-1]),
+            labels.view(-1),
+            reduction="none",
+        )                                                              # (B*T,)
+
+        labels_flat    = labels.view(-1)
+        bytes_per_tok  = token_bytes[labels_flat]                     # (B*T,)
+        valid          = bytes_per_tok > 0
+        total_nats    += (loss_per_tok * valid.float()).sum().item()
+        total_bytes   += bytes_per_tok.sum().item()
 
     model.train()
 
-    avg_loss = total_loss / max(total_tokens, 1)
-    return {
-        "val/loss":       avg_loss,
-        "val/perplexity": math.exp(min(avg_loss, 20)),
-    }
+    bpb = total_nats / (math.log(2) * total_bytes) if total_bytes > 0 else float("inf")
+    return {"val/bpb": bpb}
 
 # ── Main training loop ────────────────────────────────────────────────────────
 
@@ -214,13 +239,18 @@ def train() -> None:
     # ── Tokeniser ─────────────────────────────────────────────────────────────
     tokenizer = SLM270Tokenizer(tokenizer_dir=".")
 
-    # ── Validation batches (materialised once from Wikipedia stream) ───────────
-    print(f"Building validation set ({CFG.val_samples} Wikipedia samples)…")
-    val_batches = build_validation_batches(
+    # token_bytes: maps each token id → UTF-8 byte length (0 for special tokens)
+    # Used in val/bpb computation. Built once here so validation is fast.
+    print("Building token_bytes tensor…")
+    token_bytes_tensor = build_token_bytes(tokenizer, GEMMA3_CONFIG_270M["vocab_size"], device)
+
+    # ── Validation batches (materialised once from last ClimbMix shard) ─────────
+    print(f"Building validation set ({CFG.val_samples} ClimbMix samples, last local shard)…")
+    val_batches = build_climbmix_validation_batches(
         tokenizer,
         seq_len=CFG.seq_len,
         n_samples=CFG.val_samples,
-        batch_size=CFG.batch_size,
+        batch_size=CFG.val_batch_size,
         seed=CFG.seed,
     )
     print(f"  → {len(val_batches)} validation batches  "
@@ -354,11 +384,10 @@ def train() -> None:
     # ── Initial validation to confirm the checkpoint loaded correctly ──────────
     if RESUME_CHECKPOINT:
         print(f"\nInitial validation (checkpoint sanity-check)…")
-        val_metrics = run_validation(model, val_batches, device, fused_ce, out_head_weight)
+        val_metrics = run_validation_bpb(model, val_batches, device, token_bytes_tensor)
         print(
             f"  [val @ resume / {format_tokens(tokens_seen)}]"
-            f"  loss={val_metrics['val/loss']:.4f}"
-            f"  ppl={val_metrics['val/perplexity']:.2f}\n"
+            f"  bpb={val_metrics['val/bpb']:.4f}\n"
         )
         wandb.log(
             {**val_metrics, "tokens/seen_B": tokens_seen / 1e9},
@@ -432,11 +461,10 @@ def train() -> None:
 
             # ── Validation (every 1B tokens) ──────────────────────────────
             if tokens_seen >= next_val_tokens:
-                val_metrics = run_validation(model, val_batches, device, fused_ce, out_head_weight)
+                val_metrics = run_validation_bpb(model, val_batches, device, token_bytes_tensor)
                 print(
                     f"\n  [val @ {opt_step:,} steps / {format_tokens(tokens_seen)}]"
-                    f"  loss={val_metrics['val/loss']:.4f}"
-                    f"  ppl={val_metrics['val/perplexity']:.2f}\n"
+                    f"  bpb={val_metrics['val/bpb']:.4f}\n"
                 )
                 wandb.log(
                     {
