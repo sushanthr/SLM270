@@ -28,8 +28,11 @@ from dataset import build_dataloader, build_climbmix_validation_batches, Prefetc
 @dataclass
 class TrainConfig:
     # Tokens / budget
-    total_tokens: int          = 50_000_000_000    # 50 B  (10× Chinchilla for 270 M params)
-    lr_flat_until_tokens: int  = 14_000_000_000    # hold max_lr until 14 B, then cosine decay
+    # nanochat uses target_param_data_ratio=12 × scaling_params (transformer_matrices + lm_head).
+    # For nanochat's ~760M total model that works out to 12 × 435M ≈ 5.22B tokens.
+    # Matching that here so runs are directly comparable.
+    total_tokens: int          = 5_220_000_000     # 5.22 B  (matches nanochat's compute-optimal ratio=12)
+    lr_flat_until_tokens: int  = 1_500_000_000     # hold max_lr for first ~29% of training, then cosine decay
     seq_len: int               = 1024
 
     # Batch
